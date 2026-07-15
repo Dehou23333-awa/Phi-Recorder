@@ -11,7 +11,7 @@ use anyhow::{bail, Context, Result};
 use macroquad::{miniquad::gl::*, prelude::*};
 use ndarray::{s, Array1};
 use phire::{
-    Main, config::{ChallengeModeColor, Config, Mods}, core::{HitSound, MSRenderTarget, Note, ResourcePack, internal_id}, ext::{BLACK_TEXTURE, NotNanExt, SafeTexture}, fs::{self, FileSystem}, info::ChartInfo, scene::{BasicPlayer, EndingScene, GameMode, GameScene, LoadingScene, game::WAIT_TIME}, time::TimeManager, ui::{FontArc, TextPainter}
+    judge::apply_chord_grouping, Main, config::{ChallengeModeColor, Config, Mods}, core::{HitSound, MSRenderTarget, Note, ResourcePack, internal_id}, ext::{BLACK_TEXTURE, NotNanExt, SafeTexture}, fs::{self, FileSystem}, info::ChartInfo, scene::{BasicPlayer, EndingScene, GameMode, GameScene, LoadingScene, game::WAIT_TIME}, time::TimeManager, ui::{FontArc, TextPainter}
 };
 use rustc_hash::FxHashMap;
 use sasa::AudioClip;
@@ -102,6 +102,12 @@ pub struct RenderConfig {
 
     pub fade: f32,
     pub alpha_tint: bool,
+
+    pub chord_grouping: bool,
+    pub chord_min_interval: f64,
+    pub chord_max_interval: f64,
+
+    pub boom: bool,
 }
 
 impl RenderConfig {
@@ -158,6 +164,13 @@ impl RenderConfig {
 
             fade: self.fade,
             alpha_tint: self.alpha_tint,
+
+            chord_grouping: self.chord_grouping,
+            chord_min_interval: self.chord_min_interval,
+            chord_max_interval: self.chord_max_interval,
+
+            boom: self.boom,
+
             ..Default::default()
         }
     }
@@ -232,6 +245,12 @@ impl Default for RenderConfig {
 
             fade: 0.0,
             alpha_tint: false,
+
+            chord_grouping: false,
+            chord_min_interval: 0.060,
+            chord_max_interval: 0.060,
+
+            boom: false,
         }
     }
 }
@@ -494,6 +513,11 @@ pub async fn main(cmd: bool) -> Result<()> {
     let (chart, format) = GameScene::load_chart(fs.deref_mut(), &info, &prpr_config)
         .await
         .with_context(|| tl!("load-chart-failed"))?;
+    let chord_map = if config.chord_grouping {
+        apply_chord_grouping(&chart, config.chord_min_interval, config.chord_max_interval)
+    } else {
+        FxHashMap::default()
+    };
     let res_pack = ResourcePack::from_path(config.res_pack_path.as_ref())
         .await
         .context("Failed to load resource pack")?;
@@ -635,6 +659,7 @@ pub async fn main(cmd: bool) -> Result<()> {
     };
 
     if volume_sfx != 0.0 {
+        let chord_map = &chord_map;
         let sfx_time = Instant::now();
         let judge_offset = config.judge_offset;
         let sfx_start_time = config.play_start_time - config.judge_offset;
@@ -642,10 +667,17 @@ pub async fn main(cmd: bool) -> Result<()> {
         let mut sfx_list: Vec<(f64, &Array1<f32>)> = Vec::with_capacity(chart.lines.iter().map(|line| line.notes.len()).sum::<usize>());
 
         if config.audio_mix_optimization {
-            chart.lines.iter().flat_map(|line| &line.notes).filter(|note| !note.fake && note.time > sfx_start_time && note.time < sfx_end_time).for_each(|note| {
-                if let Some(sfx) = get_hitsound(&note) {
-                    sfx_list.push((before_time + note.time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx));
-                }
+            chart.lines.iter().enumerate().flat_map(|(line_id, line)| {
+                line.notes.iter().enumerate().filter_map(move |(note_id, note)| {
+                    if note.fake { return None; }
+                    let nid = note_id as u32;
+                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
+                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return None; }
+                    let sfx = get_hitsound(note)?;
+                    Some((before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx))
+                })
+            }).for_each(|(pos, sfx)| {
+                sfx_list.push((pos, sfx));
             });
             let len = sfx_list.len();
 
@@ -705,10 +737,17 @@ pub async fn main(cmd: bool) -> Result<()> {
             let elapsed = sfx_time.elapsed();
             eprintln!("Process Hit Effects Time: {:.2?} Equivalent Speed: {:.2} notes/sec Speed: {:.2} notes/sec", elapsed, len as f32 / elapsed.as_secs_f32(), num as f32 / elapsed.as_secs_f32())
         } else {
-            chart.lines.iter().flat_map(|line| &line.notes).filter(|note| !note.fake && note.time > sfx_start_time && note.time < sfx_end_time).for_each(|note| {
-                if let Some(sfx) = get_hitsound(&note) {
-                    sfx_list.push((before_time + note.time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx));
-                }
+            chart.lines.iter().enumerate().flat_map(|(line_id, line)| {
+                line.notes.iter().enumerate().filter_map(move |(note_id, note)| {
+                    if note.fake { return None; }
+                    let nid = note_id as u32;
+                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
+                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return None; }
+                    let sfx = get_hitsound(note)?;
+                    Some((before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx))
+                })
+            }).for_each(|(pos, sfx)| {
+                sfx_list.push((pos, sfx));
             });
             let num = sfx_list.len();
             if ipc {
