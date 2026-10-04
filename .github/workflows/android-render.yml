@@ -1,6 +1,9 @@
 name: Phi Recorder Android (Plan B)
 
 on:
+  push:
+    branches:
+      - feat/android
   workflow_dispatch:
 
 permissions:
