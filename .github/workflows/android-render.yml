@@ -1,0 +1,92 @@
+name: Phi Recorder Android (Plan B)
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  android:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v6
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK components
+        run: |
+          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
+          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-linux-android
+
+      - name: Install cargo-ndk
+        run: cargo install cargo-ndk --locked
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+
+      - name: Install frontend dependencies
+        run: pnpm install
+
+      - name: Initialize Tauri Android project
+        run: pnpm exec tauri android init --ci --skip-targets-install
+
+      - name: Set Android target SDK to 28
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          import re
+
+          root = Path('src-tauri/gen/android/app')
+          files = list(root.glob('build.gradle')) + list(root.glob('build.gradle.kts'))
+          if not files:
+              raise SystemExit(f'No generated app Gradle file found under {root}')
+          for path in files:
+              text = path.read_text(encoding='utf-8')
+              updated, count = re.subn(r'targetSdk\s*=\s*\d+', 'targetSdk = 28', text)
+              if count:
+                  path.write_text(updated, encoding='utf-8')
+                  print(f'{path}: patched {count} targetSdk value(s)')
+          if not any('targetSdk = 28' in path.read_text(encoding='utf-8') for path in files):
+              raise SystemExit('Could not set generated Android targetSdk to 28')
+          PY
+
+      - name: Fetch prpr-avc Android static libraries
+        shell: bash
+        run: |
+          set -euo pipefail
+          dest="$GITHUB_WORKSPACE/src-tauri/static-lib/aarch64-linux-android"
+          mkdir -p "$dest"
+          curl -fsSL --retry 3 \
+            'https://github.com/TeamFlos/prpr-avc-ffmpeg/releases/download/20260408_v0/aarch64-linux-android.tar.gz' \
+            -o /tmp/prpr-avc-android.tar.gz
+          tar -xzf /tmp/prpr-avc-android.tar.gz -C "$dest"
+          ls -lh "$dest"
+
+      - name: Build Android APK
+        env:
+          PRPR_AVC_LIBS: ${{ github.workspace }}/src-tauri/static-lib
+        run: pnpm exec tauri android build --target aarch64 --apk true --aab false --ci
+
+      - name: Upload Android APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: phi-recorder-android-arm64-plan-b-smoke
+          path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
+          if-no-files-found: error

@@ -725,7 +725,7 @@ async fn check_ffmpeg_filter(ffmpeg: Option<String>) -> bool {
         return false;
     }
 
-    let output = Command::new(&ffmpeg)
+    let output = Command::from(render::ffmpeg_command(&ffmpeg))
         .arg("-filters")
         .output()
         .await

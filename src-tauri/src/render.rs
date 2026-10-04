@@ -325,8 +325,21 @@ fn cmd_hidden(program: impl AsRef<OsStr>) -> Command {
     cmd
 }
 
+pub fn ffmpeg_command(path: impl AsRef<OsStr>) -> Command {
+    #[cfg(target_os = "android")]
+    {
+        let mut command = Command::new("/system/bin/linker64");
+        command.arg(path);
+        command
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        cmd_hidden(path)
+    }
+}
+
 pub fn test_ffmpeg(path: impl AsRef<OsStr>) -> bool {
-    matches!(cmd_hidden(path).arg("-version").output(), Ok(_))
+    matches!(ffmpeg_command(path).arg("-version").output(), Ok(_))
 }
 
 pub fn find_ffmpeg() -> Result<Option<String>> {
@@ -404,7 +417,7 @@ pub fn get_encoder(
 
 pub fn test_encoder(ffmpeg: &String, encoder: &str) -> bool {
     eprintln!("Testing encoder: {}", encoder);
-    let output = Command::new(ffmpeg)
+    let output = ffmpeg_command(ffmpeg)
         .args(["-f", "lavfi", "-i", "testsrc=size=1920x1080:rate=5:duration=1", "-pix_fmt", "yuv420p", "-c:v", encoder, "-f", "null", "-"])
         .args(["-loglevel", "warning"])
         // .arg("-hide_banner")
@@ -1183,7 +1196,7 @@ pub async fn main(cmd: bool) -> Result<()> {
         output_path.display()
     );
 
-    let mut proc = cmd_hidden(&ffmpeg)
+    let mut proc = ffmpeg_command(&ffmpeg)
         .args(args.split_whitespace())
         .args(format!("-y -f f32le -ar {} -ac 2", sample_rate).split_whitespace()).arg("-i").arg(output_sfx_temp.path())
         .args(format!("-y -f f32le -ar {} -ac 2", music_sample_rate).split_whitespace()).arg("-i").arg(output_music_temp.path())
