@@ -46,10 +46,10 @@ jobs:
           set -euo pipefail
           tag=20260408_v0
           if [ "${{ matrix.platform }}" = "windows-latest" ]; then
-            dest="$GITHUB_WORKSPACE/prpr-avc/static-lib/x86_64-pc-windows-msvc"
+            dest="$PWD/prpr-avc/static-lib/x86_64-pc-windows-msvc"
             url="x86_64-pc-windows-msvc.tar.gz"
           else
-            dest="$GITHUB_WORKSPACE/prpr-avc/static-lib/x86_64-unknown-linux-gnu"
+            dest="$PWD/prpr-avc/static-lib/x86_64-unknown-linux-gnu"
             url="x86_64-unknown-linux-gnu.tar.gz"
           fi
           mkdir -p "$dest"
