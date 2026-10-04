@@ -97,6 +97,8 @@
     "preserve-framebuffer-tips": "Requires anti-aliasing enabled, background disabled",
     "render-hit": "Hit Effects",
     "render-extra": "Extra (Shader)",
+    "render-block-area": "Block Area (Story Occlusion)",
+    "render-block-area-tips": "Render Phigros 4.0 story occlusion blocks (blockAreaList)",
     "render-double-hint": "Double Hit Hint",
     "loudness-equalization": "Music Loudness Equalization (-16 LUFS)",
     "audio-mix-optimization": "Audio Mix Optimization",

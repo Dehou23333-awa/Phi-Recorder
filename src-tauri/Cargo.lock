@@ -4559,7 +4559,7 @@ dependencies = [
 [[package]]
 name = "phire"
 version = "0.4.0"
-source = "git+https://github.com/2278535805/phire#3d41b896badf96320655d5cacd09beda5169973f"
+source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#5c97056ebc40c429f27e5c2d8d80c638305f3568"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4831,7 +4831,7 @@ dependencies = [
 [[package]]
 name = "prpr-avc"
 version = "0.1.0"
-source = "git+https://github.com/2278535805/phire#3d41b896badf96320655d5cacd09beda5169973f"
+source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#5c97056ebc40c429f27e5c2d8d80c638305f3568"
 dependencies = [
  "anyhow",
  "sasa",

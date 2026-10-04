@@ -96,6 +96,8 @@
     "preserve-framebuffer-tips": "需要开启抗锯齿, 关闭背景",
     "render-particle": "打击特效",
     "render-extra": "附加 (着色器)",
+    "render-block-area": "剧情遮挡块 (blockArea)",
+    "render-block-area-tips": "渲染 Phigros 4.0 剧情遮挡区域（blockAreaList）",
     "render-double-hint": "双押提示",
     "loudness-equalization": "音乐响度均衡 (-16 LUFS)",
     "audio-mix-optimization": "混音优化",

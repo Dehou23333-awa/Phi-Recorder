@@ -134,6 +134,7 @@ watch([preserveFramebuffer, sampleCount], ([pre, sam]) => {
 });
 const particle = ref(DEFAULT_RENDER_CONFIG.particle);
 const renderExtra = ref(DEFAULT_RENDER_CONFIG.renderExtra);
+const renderBlockArea = ref(DEFAULT_RENDER_CONFIG.renderBlockArea);
 const renderDoubleHint = ref(DEFAULT_RENDER_CONFIG.renderDoubleHint);
 
 const aggressiveChart = ref(DEFAULT_RENDER_CONFIG.aggressiveChart);
@@ -350,6 +351,7 @@ async function buildConfig(): Promise<RenderConfig | null> {
     preserveFramebuffer: preserveFramebuffer.value,
     particle: particle.value,
     renderExtra: renderExtra.value,
+    renderBlockArea: renderBlockArea.value,
     renderDoubleHint: renderDoubleHint.value,
     
     aggressiveChart: aggressiveChart.value,
@@ -478,6 +480,7 @@ function applyConfig(config: RenderConfig) {
   preserveFramebuffer.value = config.preserveFramebuffer;
   particle.value = config.particle;
   renderExtra.value = config.renderExtra;
+  renderBlockArea.value = config.renderBlockArea;
   renderDoubleHint.value = config.renderDoubleHint;
 
   aggressiveChart.value = config.aggressiveChart;
@@ -860,6 +863,7 @@ function setConfigForQuality() {
                   </v-col>
                   <v-col cols="3" class="px-2">
                     <v-checkbox :label="t('render-extra')" color="btn" v-model="renderExtra"></v-checkbox>
+                    <v-checkbox :label="t('render-block-area')" :title="t('render-block-area-tips')" color="btn" v-model="renderBlockArea"></v-checkbox>
                   </v-col>
                 </v-row>
               </v-expansion-panel-text>

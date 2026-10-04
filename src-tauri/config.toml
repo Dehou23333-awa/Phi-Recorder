@@ -46,6 +46,8 @@ preserveFramebuffer = false
 renderBgDim = true
 particle = true
 renderExtra = true
+renderBlockArea = true
+blockAreaClockOffset = 0.0
 
 aggressiveChart = true
 aggressiveNote = false
