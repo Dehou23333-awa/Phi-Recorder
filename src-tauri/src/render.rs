@@ -3,29 +3,30 @@ phire::tl_file!("render");
 
 use crate::{
     common::{get_output_dir, parse_args, read_config, test_output_dir},
-    ipc::IPCEvent,
+    ipc::{client::*, IPCEvent},
     task::generate_filename,
     ASSET_PATH
 };
 use anyhow::{bail, Context, Result};
 use macroquad::{miniquad::gl::*, prelude::*};
+use num_complex::Complex;
 use ndarray::{s, Array1};
 use phire::{
     judge::apply_chord_grouping, Main, config::{ChallengeModeColor, Config, Mods}, core::{HitSound, MSRenderTarget, Note, ResourcePack, internal_id}, ext::{BLACK_TEXTURE, NotNanExt, SafeTexture}, fs::{self, FileSystem}, info::ChartInfo, scene::{BasicPlayer, EndingScene, GameMode, GameScene, LoadingScene, game::WAIT_TIME}, time::TimeManager, ui::{FontArc, TextPainter}
 };
 use rustc_hash::FxHashMap;
+use rayon::prelude::*;
 use sasa::AudioClip;
+use realfft::RealFftPlanner;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    cmp::Ordering,
-    io::{BufRead, BufWriter, Write},
+    io::{BufRead, Write},
     ops::DerefMut,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     rc::Rc,
-    sync::atomic::{AtomicBool, Ordering as AtomicOrdering},
-    sync::Arc,
+    sync::{atomic::{AtomicBool, AtomicUsize, Ordering}, Arc},
     time::{Duration, Instant},
 };
 use std::{ffi::OsStr, fmt::Write as _};
@@ -71,7 +72,7 @@ pub struct RenderConfig {
     pub force_limit: bool,
     pub limit_threshold: f32,
     pub loudness_equalization: bool,
-    pub audio_mix_optimization: bool,
+    pub audio_mix_mode: AudioMixMode,
     pub watermark: String,
     pub roman: bool,
     pub chinese: bool,
@@ -113,6 +114,25 @@ pub struct RenderConfig {
     pub chord_max_interval: f64,
 
     pub boom: bool,
+}
+
+#[derive(Default, Deserialize, Serialize, Debug, Clone, Copy, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum AudioMixMode {
+    Traditional,
+    #[default]
+    Culling,
+    Fft,
+}
+
+impl AudioMixMode {
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Traditional => "traditional",
+            Self::Culling => "culling",
+            Self::Fft => "fft",
+        }
+    }
 }
 
 impl RenderConfig {
@@ -215,7 +235,7 @@ impl Default for RenderConfig {
             force_limit: true,
             limit_threshold: 0.5,
             loudness_equalization: false,
-            audio_mix_optimization: true,
+            audio_mix_mode: AudioMixMode::Culling,
             chart_debug_line: 0.0,
             chart_debug_note: 0.0,
             chart_ratio: 1.0,
@@ -400,6 +420,132 @@ fn round_to_step(v: f64, step: f64) -> f64 {
     (v / step).round() * step
 }
 
+struct PreparedSfx {
+    positions: Vec<usize>,
+    spectrum: Vec<Complex<f32>>,
+}
+
+struct SfxFftWorker {
+    forward: Arc<dyn realfft::RealToComplex<f32>>,
+    inverse: Arc<dyn realfft::ComplexToReal<f32>>,
+    impulse: Vec<f32>,
+    impulse_fft: Vec<Complex<f32>>,
+    total_fft: Vec<Complex<f32>>,
+    mixed: Vec<f32>,
+}
+
+impl SfxFftWorker {
+    fn new(fft_size: usize) -> Self {
+        let mut planner = RealFftPlanner::<f32>::new();
+        Self {
+            forward: planner.plan_fft_forward(fft_size),
+            inverse: planner.plan_fft_inverse(fft_size),
+            impulse: vec![0.0; fft_size],
+            impulse_fft: vec![Complex::new(0.0, 0.0); fft_size / 2 + 1],
+            total_fft: vec![Complex::new(0.0, 0.0); fft_size / 2 + 1],
+            mixed: vec![0.0; fft_size],
+        }
+    }
+
+    fn mix_block(
+        &mut self,
+        output: &mut [f32],
+        block_start: usize,
+        block_len: usize,
+        overlap: usize,
+        groups: &[PreparedSfx],
+    ) -> Result<()> {
+        let input_start = block_start as isize - overlap as isize;
+        let input_end = input_start + self.impulse.len() as isize;
+
+        self.total_fft.fill(Complex::new(0.0, 0.0));
+        for group in groups {
+            self.impulse.fill(0.0);
+            let first = group.positions.partition_point(|&position| (position as isize) < input_start);
+            let last = group.positions.partition_point(|&position| (position as isize) < input_end);
+            for &position in &group.positions[first..last] {
+                let impulse_position = position as isize - input_start;
+                if impulse_position >= 0 {
+                    self.impulse[impulse_position as usize] += 1.0;
+                }
+            }
+
+            self.forward.process(&mut self.impulse, &mut self.impulse_fft)?;
+            for (total, (impulse, clip)) in self
+                .total_fft
+                .iter_mut()
+                .zip(self.impulse_fft.iter().zip(&group.spectrum))
+            {
+                *total += *impulse * *clip;
+            }
+        }
+
+        self.inverse.process(&mut self.total_fft, &mut self.mixed)?;
+        let scale = 1.0 / self.impulse.len() as f32;
+        let valid_len = output.len().min(block_len);
+        for (target, &value) in output[..valid_len]
+            .iter_mut()
+            .zip(&self.mixed[overlap..overlap + valid_len])
+        {
+            *target = value * scale;
+        }
+        Ok(())
+    }
+}
+
+fn mix_sfx_fft(output: &mut Array1<f32>, groups: Vec<(&Array1<f32>, Vec<usize>)>, ipc: bool) -> Result<(usize, usize)> {
+    if groups.iter().all(|(clip, positions)| clip.is_empty() || positions.is_empty()) || output.is_empty() {
+        return Ok((0, 0));
+    }
+
+    let max_clip_len = groups.iter().filter(|(clip, positions)| !clip.is_empty() && !positions.is_empty()).map(|(clip, _)| clip.len()).max().unwrap();
+    const TARGET_BLOCK_LEN: usize = 1 << 17;
+    let fft_size = (max_clip_len + TARGET_BLOCK_LEN).next_power_of_two();
+    let overlap = max_clip_len - 1;
+    let block_len = ((fft_size - overlap) / 2) * 2;
+    let block_count = output.len().div_ceil(block_len);
+    if ipc {
+        send(IPCEvent::MixingSfx(block_count as u64 + 1));
+    }
+
+    let mut planner = RealFftPlanner::<f32>::new();
+    let forward = planner.plan_fft_forward(fft_size);
+    let mut prepared = Vec::with_capacity(groups.len());
+    for (clip, mut positions) in groups {
+        if clip.is_empty() || positions.is_empty() {
+            continue;
+        }
+        positions.sort_unstable();
+        let mut input = vec![0.0; fft_size];
+        input[..clip.len()].copy_from_slice(clip.as_slice().unwrap());
+        let mut spectrum = vec![Complex::new(0.0, 0.0); fft_size / 2 + 1];
+        forward.process(&mut input, &mut spectrum)?;
+        prepared.push(PreparedSfx { positions: positions, spectrum });
+    }
+
+    let output_slice = output.as_slice_mut().unwrap();
+    if ipc {
+        send(IPCEvent::Sfx(1));
+    }
+    let completed = AtomicUsize::new(1);
+    output_slice
+        .par_chunks_mut(block_len)
+        .enumerate()
+        .try_for_each_init(
+            || SfxFftWorker::new(fft_size),
+            |worker, (index, block)| {
+                worker.mix_block(block, index * block_len, block_len, overlap, &prepared)?;
+                if ipc {
+                    let completed = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    send(IPCEvent::Sfx(completed as u64));
+                }
+                Ok::<(), anyhow::Error>(())
+            },
+        )?;
+
+    Ok((fft_size, block_len))
+}
+
 pub async fn generate_resource(is_cli: bool, generate_output: bool) -> Result<(Box<dyn FileSystem + Send + Sync>, PathBuf, RenderConfig, ChartInfo)> {
     if is_cli {
         let (args_input, args_output, args_config, args_info) = parse_args(std::env::args().collect());
@@ -482,10 +628,16 @@ pub async fn main(cmd: bool) -> Result<()> {
     let (mut fs, output_path, mut config, info) = generate_resource(cmd, true).await?;
 
     set_pc_assets_folder(ASSET_PATH.get().unwrap().to_str().unwrap());
-    use crate::ipc::client::*;
     let ipc = !cmd;
-    let font = FontArc::try_from_vec(load_file("font.ttf").await?)?;
-    let mut painter = TextPainter::new(font);
+    let mut fonts = vec![FontArc::try_from_vec(load_file("font.ttf").await?)?];
+    for font_path in ["fallback.ttf", "emoji.ttf"] {
+        if let Ok(data) = load_file(font_path).await {
+            if let Ok(font) = FontArc::try_from_vec(data) {
+                fonts.push(font);
+            }
+        }
+    }
+    let mut painter = TextPainter::new(fonts);
     let volume_music = std::mem::take(&mut config.volume_music);
     let volume_sfx = std::mem::take(&mut config.volume_sfx);
     let mut prpr_config = config.to_config();
@@ -506,9 +658,9 @@ pub async fn main(cmd: bool) -> Result<()> {
                 match stdin.read_line(&mut line) {
                     Ok(0) => break,
                     Ok(_) => match line.trim() {
-                        "pause" => pause_requested.store(true, AtomicOrdering::SeqCst),
+                        "pause" => pause_requested.store(true, Ordering::SeqCst),
                         "resume" => {
-                            pause_requested.store(false, AtomicOrdering::SeqCst);
+                            pause_requested.store(false, Ordering::SeqCst);
                             render_thread.unpark();
                         }
                         _ => {}
@@ -542,11 +694,13 @@ pub async fn main(cmd: bool) -> Result<()> {
 
     let sample_rate = 48000;
     let sample_rate_f64 = sample_rate as f64;
-    let sfx_protect_time = if let Some(sfx_longest) = chart.hitsounds.values().max_by_key(|v| v.length().not_nan()) {
-        sfx_longest.length()
-    } else {
-        sfx_drag.length()
-    };
+    let sfx_protect_time = chart
+        .hitsounds
+        .values()
+        .map(|clip| clip.length())
+        .chain([sfx_click.length(), sfx_drag.length(), sfx_flick.length()])
+        .max_by(|a, b| a.total_cmp(b))
+        .unwrap_or(0.0);
 
     fn check_sample_rate(expected: u32, actual: u32, name: &str) -> Result<()> {
         if expected != actual {
@@ -628,17 +782,6 @@ pub async fn main(cmd: bool) -> Result<()> {
     let mut output_sfx = Array1::from_vec(vec![0.0_f32; output_sfx_len]);
     let mut output_ending_music = Array1::from_vec(vec![0.0_f32; output_ending_music_len]);
 
-    let mut place_sfx = |pos: f64, clip: &Array1<f32>| {
-        let position = (pos * sample_rate_f64).ceil() as usize * 2;
-        let len = clip.len();
-        let end = position + len;
-        if end > output_sfx_len {
-            return;
-        }
-        let mut slice = output_sfx.slice_mut(s![position..end]);
-        slice += clip;
-    };
-
     if volume_music != 0.0 {
         let music_time = Instant::now();
         let pos = (before_time - offset.min(0.)) * speed;
@@ -673,101 +816,118 @@ pub async fn main(cmd: bool) -> Result<()> {
         let judge_offset = config.judge_offset;
         let sfx_start_time = config.play_start_time - config.judge_offset;
         let sfx_end_time = sfx_start_time + chart_length_sfx;
-        let mut sfx_list: Vec<(f64, &Array1<f32>)> = Vec::with_capacity(chart.lines.iter().map(|line| line.notes.len()).sum::<usize>());
 
-        if config.audio_mix_optimization {
-            chart.lines.iter().enumerate().flat_map(|(line_id, line)| {
-                line.notes.iter().enumerate().filter_map(move |(note_id, note)| {
-                    if note.fake { return None; }
-                    let nid = note_id as u32;
-                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
-                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return None; }
-                    let sfx = get_hitsound(note)?;
-                    Some((before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx))
-                })
-            }).for_each(|(pos, sfx)| {
-                sfx_list.push((pos, sfx));
-            });
-            let len = sfx_list.len();
-
-            sfx_list.sort_by(|(a1, b1), (a2, b2)| {
-                let a1 = round_to_step(*a1, 0.005);
-                let a2 = round_to_step(*a2, 0.005);
-                match a1.partial_cmp(&a2).unwrap_or(Ordering::Equal) {
-                    Ordering::Less  => Ordering::Less,
-                    Ordering::Greater => Ordering::Greater,
-                    Ordering::Equal => {
-                        let p1 = b1.as_ptr() as usize;
-                        let p2 = b2.as_ptr() as usize;
-                        p1.cmp(&p2)
+        if config.audio_mix_mode == AudioMixMode::Fft {
+            let mut groups: Vec<(&Array1<f32>, Vec<usize>)> = Vec::new();
+            let mut num = 0;
+            chart.lines.iter().enumerate().flat_map(|(line_id, line)| line.notes.iter().enumerate().map(move |(note_id, note)| (line_id, note_id as u32, note))).for_each(|(line_id, nid, note)| {
+                if note.fake { return; }
+                let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
+                if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return; }
+                if let Some(sfx) = get_hitsound(note) {
+                    let position = (before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio) * sample_rate_f64;
+                    let position = position.ceil() as usize * 2;
+                    if position.checked_add(sfx.len()).is_some_and(|end| end <= output_sfx_len) {
+                        num += 1;
+                        if let Some((_, positions)) = groups.iter_mut().find(|(clip, _)| std::ptr::eq(*clip, sfx)) {
+                            positions.push(position);
+                        } else {
+                            groups.push((sfx, vec![position]));
+                        }
                     }
                 }
             });
-
-            let mut kept_sfx_list = Vec::with_capacity(len);
-            let mut last_arr: Option<&Array1<f32>> = None;
-            let mut last_t = 0.0;
-            let mut count = 0;
-
-            for &(pos, clip) in &sfx_list {
-                let pos = round_to_step(pos, 0.005);
-                let is_new_group = match last_arr {
-                    None => true,
-                    Some(prev) => {
-                        !std::ptr::eq(prev, clip) || pos != last_t
-                    }
-                };
-
-                if is_new_group {
-                    last_arr = Some(clip);
-                    last_t = pos;
-                    count = 1;
-                    kept_sfx_list.push((pos, clip));
-                } else {
-                    if count < 3 {
-                        kept_sfx_list.push((pos, clip));
-                        count += 1;
-                    }
-                }
-            }
-            drop(sfx_list);
-
-            let num = kept_sfx_list.len();
-            if ipc {
-                send(IPCEvent::MixingSfx(num as u64));
-            }
-            for (pos, sfx) in kept_sfx_list {
-                place_sfx(pos, sfx);
-                if ipc {
-                    send(IPCEvent::Sfx);
-                }
-            }
-
+            eprintln!("Pre-Process Hit Effects Time: {:.2?}", sfx_time.elapsed());
+            let sfx_time = Instant::now();
+            let (fft_size, block_len) = mix_sfx_fft(&mut output_sfx, groups, ipc)?;
             let elapsed = sfx_time.elapsed();
-            eprintln!("Process Hit Effects Time: {:.2?} Equivalent Speed: {:.2} notes/sec Speed: {:.2} notes/sec", elapsed, len as f32 / elapsed.as_secs_f32(), num as f32 / elapsed.as_secs_f32())
+            eprintln!("Process Hit Effects FFT Time: {:.2?} Speed: {:.2} notes/sec FFT size: {} Block size: {}", elapsed, num as f32 / elapsed.as_secs_f32(), fft_size, block_len);
         } else {
-            chart.lines.iter().enumerate().flat_map(|(line_id, line)| {
-                line.notes.iter().enumerate().filter_map(move |(note_id, note)| {
-                    if note.fake { return None; }
-                    let nid = note_id as u32;
-                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
-                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return None; }
-                    let sfx = get_hitsound(note)?;
-                    Some((before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio, sfx))
-                })
-            }).for_each(|(pos, sfx)| {
-                sfx_list.push((pos, sfx));
-            });
-            let num = sfx_list.len();
-            if ipc {
-                send(IPCEvent::MixingSfx(num as u64));
-            }
-            for (pos, sfx) in sfx_list {
-                place_sfx(pos, sfx);
-                if ipc {
-                    send(IPCEvent::Sfx);
+            let place_sfx = |output: &mut [f32], output_start: usize, position: usize, clip: &Array1<f32>| {
+                let block_end = output_start + output.len();
+                let end = position + clip.len();
+                let overlap_start = position.max(output_start);
+                let overlap_end = end.min(block_end);
+                if overlap_start >= overlap_end {
+                    return;
                 }
+
+                let source_start = overlap_start - position;
+                let target_start = overlap_start - output_start;
+                let overlap_len = overlap_end - overlap_start;
+                for (target, source) in output[target_start..target_start + overlap_len]
+                    .iter_mut()
+                    .zip(&clip.as_slice().unwrap()[source_start..source_start + overlap_len])
+                {
+                    *target += *source;
+                }
+            };
+            let total_notes = chart.lines.iter().map(|line| line.notes.len()).sum::<usize>();
+            let mut sfx_list: Vec<(usize, &Array1<f32>)> = Vec::with_capacity(total_notes);
+            if config.audio_mix_mode == AudioMixMode::Culling {
+                let mut optimized_sfx_list: Vec<(i64, &Array1<f32>)> = Vec::with_capacity(total_notes);
+                let mut sfx_counts: FxHashMap<(i64, usize), u8> = FxHashMap::with_capacity_and_hasher(total_notes, Default::default());
+                chart.lines.iter().enumerate().flat_map(|(line_id, line)| line.notes.iter().enumerate().map(move |(note_id, note)| (line_id, note_id as u32, note))).for_each(|(line_id, nid, note)| {
+                    if note.fake { return; }
+                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
+                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return; }
+                    if let Some(sfx) = get_hitsound(note) {
+                        let pos = ((before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio) * 200.0).round() as i64;
+                        let count = sfx_counts.entry((pos, sfx.as_ptr() as usize)).or_insert(0);
+                        if *count < 3 {
+                            *count += 1;
+                            let position = (pos as f64 * 0.005 * sample_rate_f64).ceil() as usize * 2;
+                            if position.checked_add(sfx.len()).is_some_and(|end| end <= output_sfx_len) {
+                                optimized_sfx_list.push((pos, sfx));
+                            }
+                        }
+                    }
+                });
+                optimized_sfx_list.sort_unstable_by_key(|&(pos, sfx)| (pos, sfx.as_ptr() as usize));
+                sfx_list.extend(optimized_sfx_list.into_iter().map(|(pos, clip)| ((pos as f64 * 0.005 * sample_rate_f64).ceil() as usize * 2, clip)));
+            } else {
+                chart.lines.iter().enumerate().flat_map(|(line_id, line)| line.notes.iter().enumerate().map(move |(note_id, note)| (line_id, note_id as u32, note))).for_each(|(line_id, nid, note)| {
+                    if note.fake { return; }
+                    let chord_time = chord_map.get(&(line_id, nid)).copied().unwrap_or(note.time);
+                    if chord_time <= sfx_start_time || chord_time >= sfx_end_time { return; }
+                    if let Some(sfx) = get_hitsound(note) {
+                        let position = (before_time + chord_time * speed_time_ratio + judge_offset - config.play_start_time * speed_time_ratio) * sample_rate_f64;
+                        let position = position.ceil() as usize * 2;
+                        if position.checked_add(sfx.len()).is_some_and(|end| end <= output_sfx_len) {
+                            sfx_list.push((position, sfx));
+                        }
+                    }
+                });
+                sfx_list.sort_unstable_by_key(|&(position, _)| position);
             }
+
+            let num = sfx_list.len();
+            let elapsed = sfx_time.elapsed();
+            eprintln!("Pre-Process Hit Effects Time: {:.2?} Speed: {:.2} notes/sec", elapsed, num as f32 / elapsed.as_secs_f32());
+            let sfx_time = Instant::now();
+
+            const BLOCK_LEN: usize = 1 << 17;
+            let block_count = output_sfx_len.div_ceil(BLOCK_LEN);
+            let max_sfx_len = sfx_list.iter().map(|(_, clip)| clip.len()).max().unwrap_or(0);
+            if ipc {
+                send(IPCEvent::MixingSfx(block_count as u64));
+            }
+            let completed = AtomicUsize::new(0);
+            output_sfx.as_slice_mut().unwrap().par_chunks_mut(BLOCK_LEN).enumerate().try_for_each(|(block_index, block)| -> Result<()> {
+                let block_start = block_index * BLOCK_LEN;
+                let block_end = block_start + block.len();
+                let search_start = block_start.saturating_sub(max_sfx_len);
+                let first = sfx_list.partition_point(|&(position, _)| position < search_start);
+                let last = sfx_list.partition_point(|&(position, _)| position < block_end);
+                for &(position, clip) in &sfx_list[first..last] {
+                    place_sfx(block, block_start, position, clip);
+                }
+                if ipc {
+                    let completed = completed.fetch_add(1, Ordering::Relaxed) + 1;
+                    send(IPCEvent::Sfx(completed as u64));
+                }
+                Ok(())
+            })?;
 
             let elapsed = sfx_time.elapsed();
             eprintln!("Process Hit Effects Time: {:.2?} Speed: {:.2} notes/sec", elapsed, num as f32 / elapsed.as_secs_f32())
@@ -790,29 +950,14 @@ pub async fn main(cmd: bool) -> Result<()> {
     if ipc {
         send(IPCEvent::Mixing);
     }
-    let output_music_temp = NamedTempFile::new()?;
-    let output_sfx_temp = NamedTempFile::new()?;
-    let output_ending_temp = NamedTempFile::new()?;
+    let mut output_music_temp = NamedTempFile::new()?;
+    let mut output_sfx_temp = NamedTempFile::new()?;
+    let mut output_ending_temp = NamedTempFile::new()?;
 
     {
         let output_audio_time = Instant::now();
 
-        let output_audio = |output: &Path, sample_rate: u32, samples: ndarray::Array1<f32>| -> Result<()> {
-            let mut proc = cmd_hidden(&ffmpeg)
-                .args(
-                    format!(
-                        "-y -f f32le -ar {} -ac 2 -i pipe:0 -c:a pcm_f32le -f wav", sample_rate
-                    )
-                    .split_whitespace(),
-                )
-                .arg(output)
-                .args(["-loglevel", "warning"])
-                .stdin(Stdio::piped())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::inherit())
-                .spawn()
-                .with_context(|| tl!("run-ffmpeg-failed"))?;
-            let input = proc.stdin.as_mut().unwrap();
+        let output_audio = |output: &mut NamedTempFile, samples: ndarray::Array1<f32>| -> Result<()> {
             let slice = samples.as_slice().unwrap();
             let byte_slice = unsafe {
                 std::slice::from_raw_parts(
@@ -820,18 +965,13 @@ pub async fn main(cmd: bool) -> Result<()> {
                     std::mem::size_of_val(slice),
                 )
             };
-            let mut writer = BufWriter::with_capacity(64 * 1024, input);
-            writer.write_all(byte_slice)?;
-            writer.flush()?;
-
-            drop(writer);
-            proc.wait()?;
+            output.write_all(byte_slice)?;
             Ok(())
         };
 
-        output_audio(output_music_temp.path(), music_sample_rate, output_music)?;
-        output_audio(output_sfx_temp.path(), sample_rate, output_sfx)?;
-        output_audio(output_ending_temp.path(), ending_music_sample_rate, output_ending_music)?;
+        output_audio(&mut output_music_temp, output_music)?;
+        output_audio(&mut output_sfx_temp, output_sfx)?;
+        output_audio(&mut output_ending_temp, output_ending_music)?;
 
         eprintln!("Output Audio Time: {:.2?}", output_audio_time.elapsed());
     }
@@ -871,10 +1011,10 @@ pub async fn main(cmd: bool) -> Result<()> {
                 move || {
                     cnt += 1;
                     if cnt == 1 || cnt == 3 {
-                        MSAA.store(true, AtomicOrdering::SeqCst);
+                        MSAA.store(true, Ordering::SeqCst);
                         Some(mst.input())
                     } else {
-                        MSAA.store(false, AtomicOrdering::SeqCst);
+                        MSAA.store(false, Ordering::SeqCst);
                         Some(mst.output())
                     }
                 }
@@ -914,10 +1054,10 @@ pub async fn main(cmd: bool) -> Result<()> {
                 move || {
                     cnt += 1;
                     if cnt == 1 || cnt == 3 {
-                        MSAA.store(true, AtomicOrdering::SeqCst);
+                        MSAA.store(true, Ordering::SeqCst);
                         Some(mst.input())
                     } else {
-                        MSAA.store(false, AtomicOrdering::SeqCst);
+                        MSAA.store(false, Ordering::SeqCst);
                         Some(mst.output())
                     }
                 }
@@ -926,6 +1066,7 @@ pub async fn main(cmd: bool) -> Result<()> {
     };
     main.top_level = false;
     main.viewport = Some((0, 0, vw as i32, vh as i32));
+    macroquad::miniquad::window::set_window_size(vw as u32, vh as u32);
 
     let bitrate_control = if config.dynamic_bitrate_control {
         if ffmpeg_encoder == encoder_list[0] && !config.mpeg4 {
@@ -946,13 +1087,13 @@ pub async fn main(cmd: bool) -> Result<()> {
         "-b:v"
     };
 
-    let mut args = "-probesize 50M -y -f rawvideo -c:v rawvideo".to_owned();
+    let mut args = "-probesize 50M -y -f rawvideo -c:v rawvideo -color_range full".to_owned();
     if ffmpeg_encoder == encoder_list[0] {
         args += " -hwaccel_output_format cuda";
     }
     write!(
         &mut args,
-        " -s {vw}x{vh} -r {fps} -pix_fmt rgba -thread_queue_size 1024 -i pipe:0"
+        " -s {vw}x{vh} -r {fps} -pix_fmt yuv420p -thread_queue_size 1024 -i pipe:0"
     )?;
 
     let mut ffmpeg_audio_filter_music = if config.loudness_equalization { format!(
@@ -1014,7 +1155,7 @@ pub async fn main(cmd: bool) -> Result<()> {
     );
 
     let args2 = format!(
-        "-c:a {} -c:v {} -movflags +faststart -pix_fmt yuv420p {} {} -filter_complex {} -map 0:v:0 -map [a] -vf vflip -f {}",
+        "-c:a {} -c:v {} -movflags +faststart -pix_fmt yuv420p {} {} -filter_complex {} -map 0:v:0 -map [a] -f {}",
         if config.hires {
             "pcm_f32le"
         } else {
@@ -1032,21 +1173,21 @@ pub async fn main(cmd: bool) -> Result<()> {
         preparing_render_time.elapsed()
     );
 
-    eprintln!("Command: {} {} {} {} {} {} {} {} {} {}",
+    eprintln!("Command: {} {} {} {} {} {} {} {} {} {} {} {} {}",
         &ffmpeg,
         args,
-        "-i", output_sfx_temp.path().display(),
-        "-i", output_music_temp.path().display(),
-        "-i", output_ending_temp.path().display(),
+        format!("-y -f f32le -ar {} -ac 2", sample_rate), "-i", output_sfx_temp.path().display(),
+        format!("-y -f f32le -ar {} -ac 2", music_sample_rate), "-i", output_music_temp.path().display(),
+        format!("-y -f f32le -ar {} -ac 2", ending_music_sample_rate), "-i", output_ending_temp.path().display(),
         args2,
         output_path.display()
     );
 
     let mut proc = cmd_hidden(&ffmpeg)
         .args(args.split_whitespace())
-        .arg("-i").arg(output_sfx_temp.path())
-        .arg("-i").arg(output_music_temp.path())
-        .arg("-i").arg(output_ending_temp.path())
+        .args(format!("-y -f f32le -ar {} -ac 2", sample_rate).split_whitespace()).arg("-i").arg(output_sfx_temp.path())
+        .args(format!("-y -f f32le -ar {} -ac 2", music_sample_rate).split_whitespace()).arg("-i").arg(output_music_temp.path())
+        .args(format!("-y -f f32le -ar {} -ac 2", ending_music_sample_rate).split_whitespace()).arg("-i").arg(output_ending_temp.path())
         .args(args2.split_whitespace())
         .arg(output_path)
         .args(["-loglevel", "warning"])
@@ -1057,7 +1198,31 @@ pub async fn main(cmd: bool) -> Result<()> {
         .with_context(|| tl!("run-ffmpeg-failed"))?;
     let mut input = proc.stdin.take().unwrap();
 
-    let byte_size = vw as usize * vh as usize * 4;
+    // let byte_size = (vw * vh * 4) as usize; // RGBA
+    let yuvh = (vh * 3).div_ceil(8); // (w * h * 3 / 2) / (w * 4) = h * 3 / 8
+    let byte_size = (vw * vh * 3 / 2) as usize; // YUV420
+    let packed_byte_size = (vw * yuvh * 4) as usize;
+
+    let yuv_target = render_target(vw, yuvh);
+    let yuv_material = load_material(
+        ShaderSource::Glsl {
+            vertex: YUV_VERTEX_SHADER,
+            fragment: YUV_FRAGMENT_SHADER,
+        },
+        MaterialParams {
+            uniforms: vec![
+                UniformDesc::new("screenSize", UniformType::Int2),
+                UniformDesc::new("targetSize", UniformType::Int2),
+                UniformDesc::new("uFlipY", UniformType::Int1),
+            ],
+            textures: vec!["screenTexture".to_string()],
+            ..Default::default()
+        },
+    )
+    .with_context(|| "failed to load YUV shader")?;
+    yuv_material.set_uniform("screenSize", [vw as i32, vh as i32]);
+    yuv_material.set_uniform("targetSize", [vw as i32, yuvh as i32]);
+    yuv_material.set_uniform("uFlipY", 1i32);
 
     const N: usize = 5; // Buffer Size
     let mut pbos: [GLuint; N] = [0; N];
@@ -1068,7 +1233,7 @@ pub async fn main(cmd: bool) -> Result<()> {
             glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
             glBufferData(
                 GL_PIXEL_PACK_BUFFER,
-                (vw as u64 * vh as u64 * 4) as _,
+                packed_byte_size as _,
                 std::ptr::null(),
                 GL_STREAM_READ,
             );
@@ -1086,14 +1251,15 @@ pub async fn main(cmd: bool) -> Result<()> {
     let frames = video_frames;
     let mut step_time = Instant::now();
     let mut last_print = Instant::now();
+    let mut last_frame_progress = Instant::now();
     let mut pause_duration = Duration::ZERO;
 
     for frame in 0..frames {
-        if !cmd && pause_requested.load(AtomicOrdering::SeqCst) {
+        if !cmd && pause_requested.load(Ordering::SeqCst) {
             eprintln!("Render paused");
             if ipc { send(IPCEvent::Paused); }
             let pause_begin = Instant::now();
-            while pause_requested.load(AtomicOrdering::SeqCst) {
+            while pause_requested.load(Ordering::SeqCst) {
                 std::thread::park();
             }
             pause_duration += pause_begin.elapsed();
@@ -1104,7 +1270,7 @@ pub async fn main(cmd: bool) -> Result<()> {
 
         let now = (frame as f64) / fps;
         *my_time.borrow_mut() = now.max(0.);
-        gl.quad_gl.render_pass(Some(mst.output().render_pass));
+        gl.quad_gl.render_pass(Some(mst.output().render_pass.raw_miniquad_id()));
         main.update()?;
         main.render(&mut painter)?;
         if *my_time.borrow() <= LoadingScene::TOTAL_TIME && config.render_loading {
@@ -1112,9 +1278,21 @@ pub async fn main(cmd: bool) -> Result<()> {
         }
         gl.flush();
 
-        if MSAA.load(AtomicOrdering::SeqCst) {
+        if MSAA.load(Ordering::SeqCst) {
             mst.blit();
         }
+
+        // GPU RGB -> YUV420
+        yuv_material.set_texture("screenTexture", mst.output().texture);
+        set_camera(&Camera2D {
+            zoom: vec2(1., 1.),
+            render_target: Some(yuv_target.clone()),
+            ..Default::default()
+        });
+        gl_use_material(&yuv_material);
+        draw_rectangle(-1., -1., 2., 2., WHITE);
+        gl_use_default_material();
+        gl.flush();
 
         if !cmd && frame % frames_per_10 == 0 {
             let progress = round_to_step((frame as f64 / video_frames as f64 * 100.).ceil(), 10.0);
@@ -1132,13 +1310,13 @@ pub async fn main(cmd: bool) -> Result<()> {
         }
 
         unsafe {
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, internal_id(mst.output()));
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, internal_id(yuv_target.clone()));
             glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[frame as usize % N]);
             glReadPixels(
                 0,
                 0,
                 vw as _,
-                vh as _,
+                yuvh as _,
                 GL_RGBA,
                 GL_UNSIGNED_BYTE,
                 std::ptr::null_mut(),
@@ -1153,8 +1331,10 @@ pub async fn main(cmd: bool) -> Result<()> {
             }
         }
 
-        if ipc {
-            send(IPCEvent::Frame);
+        let completed = frame + 1;
+        if ipc && (last_frame_progress.elapsed() >= Duration::from_millis(350) || completed == frames) {
+            send(IPCEvent::Frame(completed));
+            last_frame_progress = Instant::now();
         }
     }
     unsafe {
@@ -1180,9 +1360,108 @@ pub async fn main(cmd: bool) -> Result<()> {
     eprintln!("Render Time: {:.2?}", actual_render_time);
     eprintln!("Average FPS: {:.2}", frames as f64 / actual_render_time.as_secs_f64());
     proc.wait()?;
-    eprintln!("Total Time: {:.2?}", loading_time.elapsed());
+    eprintln!("Total Time: {:.2?}", loading_time.elapsed().saturating_sub(pause_duration));
     if ipc {
-        send(IPCEvent::Done(render_start_time.elapsed().as_secs_f64()));
+        send(IPCEvent::Done(render_start_time.elapsed().saturating_sub(pause_duration).as_secs_f64()));
     }
     Ok(())
 }
+
+const YUV_VERTEX_SHADER: &str = r#"
+#version 130
+
+in vec3 position;
+in vec2 texcoord;
+
+out vec2 fragTexCoord;
+
+void main() {
+    gl_Position = vec4(position, 1.0);
+    fragTexCoord = texcoord;
+}
+"#;
+
+const YUV_FRAGMENT_SHADER: &str = r#"
+#version 130
+
+// precision highp float;
+
+in vec2 fragTexCoord;
+
+uniform sampler2D screenTexture;
+uniform ivec2 screenSize;
+uniform ivec2 targetSize;
+uniform bool uFlipY;
+
+out vec4 outColor;
+
+vec3 getPixel(int x, int y) {
+    return texelFetch(screenTexture, ivec2(x, y), 0).xyz;
+}
+
+float getY(int x, int y) {
+    vec3 pixel = getPixel(x, y);
+    return dot(pixel, vec3(0.299, 0.587, 0.114));
+}
+
+float getU(int x, int y) {
+    vec3 pixel = (
+        getPixel(x, y)
+        + getPixel(x, y + 1)
+        + getPixel(x + 1, y)
+        + getPixel(x + 1, y + 1)
+    ) * 0.25;
+    return dot(pixel, vec3(-0.168736, -0.331264, 0.5)) + 0.5;
+}
+
+float getV(int x, int y) {
+    vec3 pixel = (
+        getPixel(x, y)
+        + getPixel(x, y + 1)
+        + getPixel(x + 1, y)
+        + getPixel(x + 1, y + 1)
+    ) * 0.25;
+    return dot(pixel, vec3(0.5, -0.418688, -0.081312)) + 0.5;
+}
+
+float getYI(int index) {
+    return getY(index % screenSize.x, index / screenSize.x);
+}
+
+float getUI(int index) {
+    return getU((index % (screenSize.x / 2)) * 2, index / (screenSize.x / 2) * 2);
+}
+
+float getVI(int index) {
+    return getV((index % (screenSize.x / 2)) * 2, index / (screenSize.x / 2) * 2);
+}
+
+void main() {
+    int w = screenSize.x; int h = screenSize.y;
+    ivec2 curr_pos = ivec2(fragTexCoord * vec2(targetSize));
+    if (!uFlipY) curr_pos.y = h - curr_pos.y - 1;
+    int byte_index = (int(curr_pos.x) + int(curr_pos.y) * w) * 4;
+
+    int y_bytes = w * h; int uv_bytes = y_bytes / 4;
+
+    if (byte_index < y_bytes) {
+        int pixel_index = byte_index;
+        outColor = vec4(
+            getYI(pixel_index), getYI(pixel_index + 1),
+            getYI(pixel_index + 2), getYI(pixel_index + 3)
+        );
+    } else if (byte_index < y_bytes + uv_bytes) {
+        int pixel_index = byte_index - y_bytes;
+        outColor = vec4(
+            getUI(pixel_index), getUI(pixel_index + 1),
+            getUI(pixel_index + 2), getUI(pixel_index + 3)
+        );
+    } else if (byte_index < y_bytes + uv_bytes * 2) {
+        int pixel_index = byte_index - y_bytes - uv_bytes;
+        outColor = vec4(
+            getVI(pixel_index), getVI(pixel_index + 1),
+            getVI(pixel_index + 2), getVI(pixel_index + 3)
+        );
+    } else outColor = vec4(0);
+}
+"#;

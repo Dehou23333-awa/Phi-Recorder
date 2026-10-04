@@ -311,7 +311,9 @@ async function cancelSelectTask() {
   for (let chart of charts.value) {
     if (chart.isSelect && chart.taskId !== null) {
       try {
-        await invoke('cancel_task', { id: chart.taskId });
+        const indexFromBack = tasks.value?.findIndex((task) => task.id === chart.taskId) ?? -1;
+        if (indexFromBack < 0) continue;
+        await invoke('cancel_task', { index: tasks.value!.length - indexFromBack - 1 });
       } catch (e) {
         toastError(e);
       }
@@ -352,6 +354,14 @@ async function clearTasks() {
     toastError(e);
   }
   window.location.reload();
+}
+
+function editChartInfo(item: RenderChart) {
+  const index = charts.value.indexOf(item);
+  if (index < 0) return;
+
+  chartInfoSelect.value = index;
+  chartInfoDialog.value = true;
 }
 
 await updateList();
@@ -522,7 +532,7 @@ function filterText(
             <v-col v-else-if="item.status.type === 'failed'" style="cursor: pointer;" @click="openOutputDialog(item.status.output)" @contextmenu="showInFolder(item.path)">{{ t('task.show-output') }}</v-col>
             <v-col v-else style="white-space: nowrap; text-overflow: ellipsis; overflow: hidden; padding-right: 10px; cursor: pointer;" @click="showInFolder(item.path)" @contextmenu="showInFolder(item.path)" :title="`${item.path}\n${t('file-open-tip')}`">{{ item.path }}</v-col>
 
-            <v-col cols="1" class="d-flex justify-center" style="min-width: 80px; max-width: 100px;"><v-btn variant="tonal" @click="chartInfoSelect = item.id; chartInfoDialog = true">{{ t('edit') }}</v-btn></v-col>
+            <v-col cols="1" class="d-flex justify-center" style="min-width: 80px; max-width: 100px;"><v-btn variant="tonal" @click="editChartInfo(item)">{{ t('edit') }}</v-btn></v-col>
             <v-col cols="1" class="d-flex justify-center" style="min-width: 80px; max-width: 100px;"><v-btn variant="tonal" :loading="loadingPreview" @click="previewChart(item)">{{ t('preview') }}</v-btn></v-col>
           </v-row>
         </template>

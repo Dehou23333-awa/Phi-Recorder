@@ -126,7 +126,7 @@ export interface RenderConfig {
   forceLimit: boolean;
   limitThreshold: number;
   loudnessEqualization: boolean;
-  audioMixOptimization: boolean;
+  audioMixMode: 'traditional' | 'culling' | 'fft';
   fileNameFormat: string;
 
   renderLine: boolean;
@@ -191,7 +191,7 @@ export const DEFAULT_RENDER_CONFIG: RenderConfig = {
   forceLimit: true,
   limitThreshold: 0.5,
   loudnessEqualization: false,
-  audioMixOptimization: true,
+  audioMixMode: 'culling',
   watermark: '',
   roman: false,
   chinese: false,

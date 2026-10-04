@@ -66,12 +66,25 @@ pub async fn main(cmd: bool, tweak_offset: bool, autoplay: bool) -> Result<()> {
         prpr_config.mods |= Mods::AUTOPLAY;
     }
     prpr_config.volume_bgm = prpr_config.volume_music;
-    if let Ok(fullscreen_mode) = read_config().map(|config| config.fullscreen_mode) {
-        macroquad::window::set_fullscreen(fullscreen_mode);
+
+    let (vw, vh) = config.resolution;
+    let asp = vw as f32 / vh as f32;
+    let ww = (720. * asp) as u32;
+    let wh = 720;
+    macroquad::miniquad::window::set_window_size(ww, wh);
+    if let Ok(true) = read_config().map(|config| config.fullscreen_mode) {
+        macroquad::window::set_fullscreen(true);
     }
 
-    let font = FontArc::try_from_vec(load_file("font.ttf").await?)?;
-    let mut painter = TextPainter::new(font);
+    let mut fonts = vec![FontArc::try_from_vec(load_file("font.ttf").await?)?];
+    for font_path in ["fallback.ttf", "emoji.ttf"] {
+        if let Ok(data) = load_file(font_path).await {
+            if let Ok(font) = FontArc::try_from_vec(data) {
+                fonts.push(font);
+            }
+        }
+    }
+    let mut painter = TextPainter::new(fonts);
 
     let player = build_player(&config).await?;
 
