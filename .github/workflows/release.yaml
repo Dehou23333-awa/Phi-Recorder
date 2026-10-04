@@ -38,16 +38,41 @@ jobs:
         with:
           toolchain: stable-x86_64-msvc
 
+      # Same as debug.yaml: prpr-avc cannot link without the static libs, and
+      # this repository gitignores them.
+      - name: Fetch ffmpeg static libs
+        shell: bash
+        run: |
+          set -euo pipefail
+          tag=20260408_v0
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            dest="$GITHUB_WORKSPACE/prpr-avc/static-lib/x86_64-pc-windows-msvc"
+            url="x86_64-pc-windows-msvc.tar.gz"
+          else
+            dest="$GITHUB_WORKSPACE/prpr-avc/static-lib/x86_64-unknown-linux-gnu"
+            url="x86_64-unknown-linux-gnu.tar.gz"
+          fi
+          mkdir -p "$dest"
+          curl -fsSL --retry 3             "https://github.com/TeamFlos/prpr-avc-ffmpeg/releases/download/$tag/$url"             -o /tmp/avc.tar.gz
+          tar -xzf /tmp/avc.tar.gz -C "$dest"
+          if [ "${{ matrix.platform }}" = "windows-latest" ]; then
+            for f in libavcodec libavformat libavutil libswresample libswscale; do
+              [ -f "$dest/$f.lib" ] && cp "$dest/$f.lib" "$dest/$f.a"
+            done
+          fi
+          ls -la "$dest"
+
       - name: Rust cache
         uses: swatinem/rust-cache@v2
         with:
           workspaces: './src-tauri -> target'
           cache-all-crates: "true"
 
+      # pnpm-lock.yaml is lockfileVersion 9.0; pnpm 8 cannot read it.
       - name: Sync node version and setup cache
-        uses: pnpm/action-setup@v2
+        uses: pnpm/action-setup@v4
         with:
-          version: 8
+          version: 9
 
       - name: Install frontend dependencies
         # If you don't have `beforeBuildCommand` configured you may want to build your frontend here too.
