@@ -13,6 +13,9 @@ mod icon;
 #[cfg(target_os = "android")]
 mod android_uri;
 
+#[cfg(target_os = "android")]
+mod android_render;
+
 use anyhow::{bail, Context, Result};
 use common::{
     collect_chart_files, create_zip, ensure_dir, get_presets_json_file, get_presets_toml_file, get_rpe_dir, get_output_dir, respack_dir, save_presets, AppConfig, Extra, CONFIG_DIR, DATA_DIR
@@ -70,13 +73,25 @@ async fn wrap_async<R>(f: impl Future<Output = Result<R>>) -> Result<R, InvokeEr
     })
 }
 
-// miniquad's Android backend emits a Native-Activity glue that calls `quad_main`,
-// and the Android linker refuses to dlopen a library holding an unresolved global
-// symbol -- so the cdylib has to define it even though a Tauri activity never
-// starts that glue (the WebView, not miniquad, owns the window here).
+// miniquad's Android backend exports the JNI glue that calls `quad_main` as the
+// app entry point, and the Android linker refuses to dlopen a library holding an
+// unresolved global symbol -- so the cdylib has to define it. The render
+// Activity is the only thing that ever calls it: `QuadNative.activityOnCreate`
+// hands over here, miniquad builds a GL context on that Activity's surface and
+// runs the loop on its own thread.
 #[cfg(target_os = "android")]
 #[no_mangle]
-pub extern "C" fn quad_main() {}
+pub extern "C" fn quad_main() {
+    // Not `run_wrapped`: its `exit_program` would take the whole app down, while
+    // this process still owns the WebView.
+    macroquad::Window::from_config(build_conf(true), async {
+        if let Err(err) = &render::main(false).await {
+            error!("{err:?}");
+            crate::ipc::server::report_failure(err);
+        }
+        crate::ipc::server::finish();
+    });
+}
 
 fn run_wrapped(f: impl Future<Output = Result<()>> + 'static, headless: bool) {
     macroquad::Window::from_config(build_conf(headless), async {
@@ -221,6 +236,17 @@ pub fn run() -> Result<()> {
                 .app_cache_dir()
                 .unwrap_or_else(|_| exe_dir.to_owned())
                 .join("tmp"),
+        ))
+        .ok();
+
+    // The task and the in-process Android render hand each other files.
+    #[cfg(target_os = "android")]
+    common::RENDER_DIR
+        .set(ensure_dir(
+            resolver
+                .app_cache_dir()
+                .unwrap_or_else(|_| exe_dir.to_owned())
+                .join("render"),
         ))
         .ok();
 
@@ -373,6 +399,9 @@ pub fn cmd_hidden(program: impl AsRef<std::ffi::OsStr>) -> Command {
 #[tauri::command]
 async fn preview_chart(params: RenderParams) -> Result<(), InvokeError> {
     wrap_async(async move {
+        if cfg!(target_os = "android") {
+            bail!(mtl!("preview-unsupported"));
+        }
         let mut child = cmd_hidden(std::env::current_exe()?)
             .arg("preview")
             .stdin(Stdio::piped())
@@ -393,6 +422,9 @@ async fn preview_chart(params: RenderParams) -> Result<(), InvokeError> {
 #[tauri::command]
 async fn preview_tweakoffset(params: RenderParams) -> Result<Option<f32>, InvokeError> {
     wrap_async(async move {
+        if cfg!(target_os = "android") {
+            bail!(mtl!("preview-unsupported"));
+        }
         let mut child = cmd_hidden(std::env::current_exe()?)
             .arg("tweakoffset")
             .stdin(Stdio::piped())
@@ -433,6 +465,9 @@ async fn preview_tweakoffset(params: RenderParams) -> Result<Option<f32>, Invoke
 #[tauri::command]
 async fn preview_play(params: RenderParams) -> Result<(), InvokeError> {
     wrap_async(async move {
+        if cfg!(target_os = "android") {
+            bail!(mtl!("preview-unsupported"));
+        }
         let mut child = cmd_hidden(std::env::current_exe()?)
             .arg("play")
             .stdin(Stdio::piped())

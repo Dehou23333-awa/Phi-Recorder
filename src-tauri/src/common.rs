@@ -16,6 +16,9 @@ use crate::render::RenderConfig;
 pub static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+/// Where the task and the in-process Android render hand each other files.
+#[cfg(target_os = "android")]
+pub static RENDER_DIR: OnceLock<PathBuf> = OnceLock::new();
 
 /// Android ships no `/tmp`, which is what `NamedTempFile::new` falls back to, so
 /// scratch files have to go somewhere the app owns.

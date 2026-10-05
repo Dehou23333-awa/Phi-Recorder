@@ -21,7 +21,7 @@ use realfft::RealFftPlanner;
 use serde::{Deserialize, Serialize};
 use std::{
     cell::RefCell,
-    io::{BufRead, Write},
+    io::Write,
     ops::DerefMut,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -654,17 +654,11 @@ pub async fn generate_resource(is_cli: bool, generate_output: bool) -> Result<(B
 
         Ok((fs, output_path, config, info))
     } else {
-        let mut stdin = std::io::stdin().lock();
-
-        let mut line = String::new();
-        stdin.read_line(&mut line)?;
-        let params: RenderParams = serde_json::from_str(line.trim())?;
+        let params: RenderParams = serde_json::from_str(crate::ipc::server::request_line(0)?.trim())?;
         let path = params.path;
-        
+
         let output_path = if generate_output {
-            line.clear();
-            stdin.read_line(&mut line)?;
-            serde_json::from_str::<PathBuf>(line.trim())?
+            serde_json::from_str::<PathBuf>(crate::ipc::server::request_line(1)?.trim())?
         } else {
             PathBuf::new()
         };
@@ -706,21 +700,17 @@ pub async fn main(cmd: bool) -> Result<()> {
         let pause_requested = Arc::clone(&pause_requested);
         let render_thread = std::thread::current();
         std::thread::spawn(move || {
-            let stdin = std::io::stdin();
-            let mut line = String::new();
+            let mut commands = crate::ipc::server::Commands::new();
             loop {
-                line.clear();
-                match stdin.read_line(&mut line) {
-                    Ok(0) => break,
-                    Ok(_) => match line.trim() {
-                        "pause" => pause_requested.store(true, Ordering::SeqCst),
-                        "resume" => {
-                            pause_requested.store(false, Ordering::SeqCst);
-                            render_thread.unpark();
-                        }
-                        _ => {}
-                    },
-                    Err(_) => break,
+                let Ok(Some(line)) = commands.next() else { break };
+                match line.trim() {
+                    "pause" => pause_requested.store(true, Ordering::SeqCst),
+                    "resume" => {
+                        pause_requested.store(false, Ordering::SeqCst);
+                        render_thread.unpark();
+                    }
+                    "cancel" => break,
+                    _ => {}
                 }
             }
         });
@@ -1037,7 +1027,12 @@ pub async fn main(cmd: bool) -> Result<()> {
 
     let preparing_render_time = Instant::now();
     let (vw, vh) = config.resolution;
-    let mst = Rc::new(MSRenderTarget::new((vw, vh), config.sample_count));
+    // GLES 2.0 has neither multisampled buffers nor glBlitFramebuffer, so the
+    // device path gets single-sample targets and never resolves one into
+    // another; frames render straight into the target that is read back.
+    let samples = if cfg!(target_os = "android") { 0 } else { config.sample_count };
+    let blitable = !cfg!(target_os = "android");
+    let mst = Rc::new(MSRenderTarget::new((vw, vh), samples));
     let my_time: Rc<RefCell<f64>> = Rc::new(RefCell::new(0.));
     let tm = TimeManager::manual(Box::new({
         let my_time = Rc::clone(&my_time);
@@ -1065,7 +1060,7 @@ pub async fn main(cmd: bool) -> Result<()> {
                 let mst = Rc::clone(&mst);
                 move || {
                     cnt += 1;
-                    if cnt == 1 || cnt == 3 {
+                    if blitable && (cnt == 1 || cnt == 3) {
                         MSAA.store(true, Ordering::SeqCst);
                         Some(mst.input())
                     } else {
@@ -1108,7 +1103,7 @@ pub async fn main(cmd: bool) -> Result<()> {
                 let mst = Rc::clone(&mst);
                 move || {
                     cnt += 1;
-                    if cnt == 1 || cnt == 3 {
+                    if blitable && (cnt == 1 || cnt == 3) {
                         MSAA.store(true, Ordering::SeqCst);
                         Some(mst.input())
                     } else {
@@ -1142,13 +1137,21 @@ pub async fn main(cmd: bool) -> Result<()> {
         "-b:v"
     };
 
+    // Desktop pipes frames the GPU already packed as YUV420, so the raw input is
+    // declared full range; the device path has no packer (see below) and pipes
+    // RGBA, letting ffmpeg's own scaler do the conversion.
+    #[cfg(target_os = "android")]
+    let mut args = "-probesize 50M -y -f rawvideo -pixel_format rgba".to_owned();
+    #[cfg(not(target_os = "android"))]
     let mut args = "-probesize 50M -y -f rawvideo -c:v rawvideo -color_range full".to_owned();
+    #[cfg(not(target_os = "android"))]
     if ffmpeg_encoder == encoder_list[0] {
         args += " -hwaccel_output_format cuda";
     }
     write!(
         &mut args,
-        " -s {vw}x{vh} -r {fps} -pix_fmt yuv420p -thread_queue_size 1024 -i pipe:0"
+        " -s {vw}x{vh} -r {fps}{} -thread_queue_size 1024 -i pipe:0",
+        if cfg!(target_os = "android") { "" } else { " -pix_fmt yuv420p" }
     )?;
 
     let mut ffmpeg_audio_filter_music = if config.loudness_equalization { format!(
@@ -1253,48 +1256,12 @@ pub async fn main(cmd: bool) -> Result<()> {
         .with_context(|| tl!("run-ffmpeg-failed"))?;
     let mut input = proc.stdin.take().unwrap();
 
-    // let byte_size = (vw * vh * 4) as usize; // RGBA
-    let yuvh = (vh * 3).div_ceil(8); // (w * h * 3 / 2) / (w * 4) = h * 3 / 8
-    let byte_size = (vw * vh * 3 / 2) as usize; // YUV420
-    let packed_byte_size = (vw * yuvh * 4) as usize;
-
-    let yuv_target = render_target(vw, yuvh);
-    let yuv_material = load_material(
-        ShaderSource::Glsl {
-            vertex: YUV_VERTEX_SHADER,
-            fragment: YUV_FRAGMENT_SHADER,
-        },
-        MaterialParams {
-            uniforms: vec![
-                UniformDesc::new("screenSize", UniformType::Int2),
-                UniformDesc::new("targetSize", UniformType::Int2),
-                UniformDesc::new("uFlipY", UniformType::Int1),
-            ],
-            textures: vec!["screenTexture".to_string()],
-            ..Default::default()
-        },
-    )
-    .with_context(|| "failed to load YUV shader")?;
-    yuv_material.set_uniform("screenSize", [vw as i32, vh as i32]);
-    yuv_material.set_uniform("targetSize", [vw as i32, yuvh as i32]);
-    yuv_material.set_uniform("uFlipY", 1i32);
-
-    const N: usize = 5; // Buffer Size
-    let mut pbos: [GLuint; N] = [0; N];
-    unsafe {
-        use miniquad::gl::*;
-        glGenBuffers(N as _, pbos.as_mut_ptr());
-        for pbo in pbos {
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
-            glBufferData(
-                GL_PIXEL_PACK_BUFFER,
-                packed_byte_size as _,
-                std::ptr::null(),
-                GL_STREAM_READ,
-            );
-        }
-        glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
-    }
+    // Frames leave GL through a packed YUV target and a buffer ring on desktop,
+    // and through a plain read-back on GLES 2.0, which has neither.
+    #[cfg(not(target_os = "android"))]
+    let mut packer = GpuPacker::new(vw, vh)?;
+    #[cfg(target_os = "android")]
+    let mut packer = ReadbackPacker::new(vw, vh);
 
     if ipc {
         send(IPCEvent::RenderFrame(video_frames));
@@ -1310,6 +1277,10 @@ pub async fn main(cmd: bool) -> Result<()> {
     let mut pause_duration = Duration::ZERO;
 
     for frame in 0..frames {
+        if crate::ipc::server::canceled() {
+            eprintln!("Render canceled");
+            break;
+        }
         if !cmd && pause_requested.load(Ordering::SeqCst) {
             eprintln!("Render paused");
             if ipc { send(IPCEvent::Paused); }
@@ -1337,18 +1308,6 @@ pub async fn main(cmd: bool) -> Result<()> {
             mst.blit();
         }
 
-        // GPU RGB -> YUV420
-        yuv_material.set_texture("screenTexture", mst.output().texture);
-        set_camera(&Camera2D {
-            zoom: vec2(1., 1.),
-            render_target: Some(yuv_target.clone()),
-            ..Default::default()
-        });
-        gl_use_material(&yuv_material);
-        draw_rectangle(-1., -1., 2., 2., WHITE);
-        gl_use_default_material();
-        gl.flush();
-
         if !cmd && frame % frames_per_10 == 0 {
             let progress = round_to_step((frame as f64 / video_frames as f64 * 100.).ceil(), 10.0);
             eprintln!("Render progress: {:.0}% {}/{} Time elapsed: {:.2}s",
@@ -1364,27 +1323,7 @@ pub async fn main(cmd: bool) -> Result<()> {
             );
         }
 
-        unsafe {
-            glBindFramebuffer(GL_READ_FRAMEBUFFER, internal_id(yuv_target.clone()));
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[frame as usize % N]);
-            glReadPixels(
-                0,
-                0,
-                vw as _,
-                yuvh as _,
-                GL_RGBA,
-                GL_UNSIGNED_BYTE,
-                std::ptr::null_mut(),
-            );
-            if frame >= N as u64 - 1 {
-                glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[(frame + 1) as usize % N]);
-                let src: *const u8 = glMapBuffer(GL_PIXEL_PACK_BUFFER, 0x88B8 /* GL_READ_ONLY */);
-                if !src.is_null() {
-                    input.write_all(&std::slice::from_raw_parts(src, byte_size))?;
-                }
-                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-            }
-        }
+        packer.pump(&mst, frame, &mut input)?;
 
         let completed = frame + 1;
         if ipc && (last_frame_progress.elapsed() >= Duration::from_millis(350) || completed == frames) {
@@ -1392,18 +1331,7 @@ pub async fn main(cmd: bool) -> Result<()> {
             last_frame_progress = Instant::now();
         }
     }
-    unsafe {
-        let start = (frames as usize + 1) % N;
-        for i in 0..N - 1 {
-            glBindBuffer(GL_PIXEL_PACK_BUFFER, pbos[(start + i) % N]);
-            let src: *const u8 = glMapBuffer(GL_PIXEL_PACK_BUFFER, 0x88B8 /* GL_READ_ONLY */);
-            if !src.is_null() {
-                input.write_all(&std::slice::from_raw_parts(src, byte_size))?;
-            }
-            glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
-        }
-        glDeleteBuffers(N as _, pbos.as_ptr());
-    }
+    packer.drain(frames, &mut input)?;
     drop(input);
     if cmd {
         eprintln!(
@@ -1422,6 +1350,180 @@ pub async fn main(cmd: bool) -> Result<()> {
     Ok(())
 }
 
+/// Desktop: the frame is converted to packed YUV420 by the GPU and leaves GL
+/// through a ring of pixel pack buffers, so encoding and read-back overlap.
+#[cfg(not(target_os = "android"))]
+const PACK_BUFFERS: usize = 5;
+
+#[cfg(not(target_os = "android"))]
+struct GpuPacker {
+    vw: u32,
+    yuvh: u32,
+    byte_size: usize,
+    yuv_target: RenderTarget,
+    yuv_material: Material,
+    pbos: [GLuint; PACK_BUFFERS],
+}
+
+#[cfg(not(target_os = "android"))]
+impl GpuPacker {
+    fn new(vw: u32, vh: u32) -> Result<Self> {
+        let yuvh = (vh * 3).div_ceil(8); // (w * h * 3 / 2) / (w * 4) = h * 3 / 8
+        let byte_size = (vw * vh * 3 / 2) as usize; // YUV420
+        let packed_byte_size = (vw * yuvh * 4) as usize;
+
+        let yuv_target = render_target(vw, yuvh);
+        let yuv_material = load_material(
+            ShaderSource::Glsl {
+                vertex: YUV_VERTEX_SHADER,
+                fragment: YUV_FRAGMENT_SHADER,
+            },
+            MaterialParams {
+                uniforms: vec![
+                    UniformDesc::new("screenSize", UniformType::Int2),
+                    UniformDesc::new("targetSize", UniformType::Int2),
+                    UniformDesc::new("uFlipY", UniformType::Int1),
+                ],
+                textures: vec!["screenTexture".to_string()],
+                ..Default::default()
+            },
+        )
+        .with_context(|| "failed to load YUV shader")?;
+        yuv_material.set_uniform("screenSize", [vw as i32, vh as i32]);
+        yuv_material.set_uniform("targetSize", [vw as i32, yuvh as i32]);
+        yuv_material.set_uniform("uFlipY", 1i32);
+
+        let mut pbos: [GLuint; PACK_BUFFERS] = [0; PACK_BUFFERS];
+        unsafe {
+            use miniquad::gl::*;
+            glGenBuffers(PACK_BUFFERS as _, pbos.as_mut_ptr());
+            for pbo in pbos {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, pbo);
+                glBufferData(
+                    GL_PIXEL_PACK_BUFFER,
+                    packed_byte_size as _,
+                    std::ptr::null(),
+                    GL_STREAM_READ,
+                );
+            }
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, 0);
+        }
+
+        Ok(Self { vw, yuvh, byte_size, yuv_target, yuv_material, pbos })
+    }
+
+    fn pump(&mut self, mst: &MSRenderTarget, frame: u64, input: &mut impl Write) -> Result<()> {
+        let mut gl = unsafe { get_internal_gl() };
+
+        // GPU RGB -> YUV420
+        self.yuv_material.set_texture("screenTexture", mst.output().texture);
+        set_camera(&Camera2D {
+            zoom: vec2(1., 1.),
+            render_target: Some(self.yuv_target.clone()),
+            ..Default::default()
+        });
+        gl_use_material(&self.yuv_material);
+        draw_rectangle(-1., -1., 2., 2., WHITE);
+        gl_use_default_material();
+        gl.flush();
+
+        unsafe {
+            glBindFramebuffer(GL_READ_FRAMEBUFFER, internal_id(self.yuv_target.clone()));
+            glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbos[frame as usize % PACK_BUFFERS]);
+            glReadPixels(
+                0,
+                0,
+                self.vw as _,
+                self.yuvh as _,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                std::ptr::null_mut(),
+            );
+            if frame >= PACK_BUFFERS as u64 - 1 {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbos[(frame + 1) as usize % PACK_BUFFERS]);
+                let src: *const u8 = glMapBuffer(GL_PIXEL_PACK_BUFFER, 0x88B8 /* GL_READ_ONLY */);
+                if !src.is_null() {
+                    input.write_all(&std::slice::from_raw_parts(src, self.byte_size))?;
+                }
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            }
+        }
+        Ok(())
+    }
+
+    /// The ring holds up to one not-yet-read frame per buffer, so the tail is
+    /// handed over in the order it was queued.
+    fn drain(&mut self, frames: u64, input: &mut impl Write) -> Result<()> {
+        unsafe {
+            let start = (frames as usize + 1) % PACK_BUFFERS;
+            for i in 0..PACK_BUFFERS - 1 {
+                glBindBuffer(GL_PIXEL_PACK_BUFFER, self.pbos[(start + i) % PACK_BUFFERS]);
+                let src: *const u8 = glMapBuffer(GL_PIXEL_PACK_BUFFER, 0x88B8 /* GL_READ_ONLY */);
+                if !src.is_null() {
+                    input.write_all(&std::slice::from_raw_parts(src, self.byte_size))?;
+                }
+                glUnmapBuffer(GL_PIXEL_PACK_BUFFER);
+            }
+            glDeleteBuffers(PACK_BUFFERS as _, self.pbos.as_ptr());
+        }
+        Ok(())
+    }
+}
+
+/// GLES 2.0: no pack buffers and no shader that can pack YUV, so each frame is
+/// read back as RGBA and turned upside down on the CPU, which is the only
+/// difference from the desktop path a viewer can see.
+#[cfg(target_os = "android")]
+struct ReadbackPacker {
+    width: usize,
+    height: usize,
+    stride: usize,
+    pixels: Vec<u8>,
+    flipped: Vec<u8>,
+}
+
+#[cfg(target_os = "android")]
+impl ReadbackPacker {
+    fn new(vw: u32, vh: u32) -> Self {
+        let size = vw as usize * vh as usize * 4;
+        Self {
+            width: vw as usize,
+            height: vh as usize,
+            stride: vw as usize * 4,
+            pixels: vec![0; size],
+            flipped: vec![0; size],
+        }
+    }
+
+    fn pump(&mut self, mst: &MSRenderTarget, _frame: u64, input: &mut impl Write) -> Result<()> {
+        unsafe {
+            // GL_READ_FRAMEBUFFER is GL 3.0; GLES 2.0 only knows GL_FRAMEBUFFER.
+            glBindFramebuffer(GL_FRAMEBUFFER, internal_id(mst.output()));
+            glReadPixels(
+                0,
+                0,
+                self.width as _,
+                self.height as _,
+                GL_RGBA,
+                GL_UNSIGNED_BYTE,
+                self.pixels.as_mut_ptr() as _,
+            );
+        }
+        for (row, source) in (0..self.height).rev().zip(self.pixels.chunks(self.stride)) {
+            let target = row * self.stride;
+            self.flipped[target..target + self.stride].copy_from_slice(source);
+        }
+        input.write_all(&self.flipped)?;
+        Ok(())
+    }
+
+    fn drain(&mut self, _frames: u64, _input: &mut impl Write) -> Result<()> {
+        Ok(())
+    }
+}
+
+// GLSL 130, so these belong to the desktop packer only.
+#[cfg(not(target_os = "android"))]
 const YUV_VERTEX_SHADER: &str = r#"
 #version 130
 
@@ -1436,6 +1538,7 @@ void main() {
 }
 "#;
 
+#[cfg(not(target_os = "android"))]
 const YUV_FRAGMENT_SHADER: &str = r#"
 #version 130
 

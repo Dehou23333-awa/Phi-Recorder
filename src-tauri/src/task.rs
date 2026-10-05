@@ -5,6 +5,8 @@ use crate::{
     render::{RenderConfig, RenderParams},
     ASSET_PATH
 };
+#[cfg(target_os = "android")]
+use crate::ipc;
 use anyhow::Result;
 use chrono::Local;
 use phire::{fs, info::ChartInfo};
@@ -239,6 +241,17 @@ impl Task {
     }
 
     pub async fn run(&self) -> Result<()> {
+        #[cfg(target_os = "android")]
+        return self.run_local().await;
+
+        #[cfg(not(target_os = "android"))]
+        self.run_child().await
+    }
+
+    // Compiled everywhere: on Android nothing calls it, since `run` dispatches to
+    // `run_local` there.
+    #[cfg_attr(target_os = "android", allow(dead_code))]
+    async fn run_child(&self) -> Result<()> {
         if self.request_cancel.load(std::sync::atomic::Ordering::Relaxed) {
             return Ok(());
         }
@@ -269,14 +282,8 @@ impl Task {
         let mut stdout_lines = BufReader::new(stdout).lines();
         let mut stderr_lines = BufReader::new(stderr).lines();
         let mut output_stderr = String::new();
-        let mut total_mixing: u64 = 0;
-        let mut total_frame: u64 = 0;
-        let start = Instant::now();
-        let mut frame_samples: VecDeque<(f64, u64)> = VecDeque::new();
-        let mut last_fps: u64 = 0;
         let mut pause_written = false;
-        let mut total_pause_duration = Duration::ZERO;
-        let mut pause_start: Option<Instant> = None;
+        let mut progress = Progress::new();
 
         let config = read_config()?;
 
@@ -299,91 +306,24 @@ impl Task {
                         continue;
                     };
 
-                    match event {
-                        IPCEvent::Loading => {
-                            *self.status.lock().await = TaskStatus::Loading;
-                        },
-                        IPCEvent::Mixing => {
-                            *self.status.lock().await = TaskStatus::Mixing;
-                        },
-                        IPCEvent::MixingSfx(total) => {
-                            *self.status.lock().await = TaskStatus::MixingSfx {
-                                progress: 0.0,
-                            };
-                            total_mixing = total;
-                        },
-                        IPCEvent::Sfx(completed) => {
-                            *self.status.lock().await = TaskStatus::MixingSfx {
-                                progress: completed as f64 / total_mixing as f64,
-                            };
-                        },
-                        IPCEvent::RenderFrame(total) => {
-                            *self.status.lock().await = TaskStatus::Rendering {
-                                progress: 0.0,
-                                fps: 0,
-                                estimate: 0.0,
-                            };
-                            total_frame = total;
-                        },
-                        IPCEvent::Frame(completed) => {
-                            let cur = start.elapsed().as_secs_f64() - total_pause_duration.as_secs_f64() - pause_start.map_or(0.0, |s| s.elapsed().as_secs_f64());
-                            frame_samples.push_back((cur, completed));
-                            while frame_samples.len() > 2 && frame_samples.get(1).is_some_and(|(time, _)| cur - *time > 1.0) {
-                                frame_samples.pop_front();
-                            }
-                            if let Some(&(sample_time, sample_frame)) = frame_samples.front() {
-                                let elapsed = cur - sample_time;
-                                if elapsed > 0.0 {
-                                    last_fps = ((completed - sample_frame) as f64 / elapsed).round() as u64;
-                                }
-                            }
-                            let estimate = total_frame.saturating_sub(completed).max(1) as f64 / last_fps.max(1) as f64;
-                            *self.status.lock().await = TaskStatus::Rendering {
-                                progress: completed as f64 / total_frame as f64,
-                                fps: last_fps,
-                                estimate,
-                            };
-                        },
-                        IPCEvent::Paused => {
-                            let mut status = self.status.lock().await;
-                            if let TaskStatus::Rendering { progress, .. } = *status {
-                                *status = TaskStatus::Paused { progress };
-                            }
-                            pause_start = Some(Instant::now());
-                        },
-                        IPCEvent::Resumed => {
-                            if let Some(s) = pause_start.take() {
-                                total_pause_duration += s.elapsed();
-                            }
-                            frame_samples.clear();
-                            last_fps = 0;
-                            let mut status = self.status.lock().await;
-                            if let TaskStatus::Paused { progress } = *status {
-                                *status = TaskStatus::Rendering {
-                                    progress,
-                                    fps: 0,
-                                    estimate: 0.0,
-                                };
-                            }
-                        },
-                        IPCEvent::Done(duration) => {
-                            child.wait().await?;
-                            while let Some(line) = stderr_lines.next_line().await? {
-                                if config.print_stderr {
-                                    eprintln!("{}", line);
-                                }
-                                output_stderr.push_str(&line);
-                                output_stderr.push('\n');
-                            }
-                            info!("Task #{} completed in {}", self.id, format_duration(Duration::from_secs_f64(duration)));
-
-                            *self.status.lock().await = TaskStatus::Done {
-                                duration,
-                                output: output_stderr,
-                            };
-                            return Ok(());
+                    let Some(duration) = progress.apply(event, &self.status).await else {
+                        continue;
+                    };
+                    child.wait().await?;
+                    while let Some(line) = stderr_lines.next_line().await? {
+                        if config.print_stderr {
+                            eprintln!("{}", line);
                         }
+                        output_stderr.push_str(&line);
+                        output_stderr.push('\n');
                     }
+                    info!("Task #{} completed in {}", self.id, format_duration(Duration::from_secs_f64(duration)));
+
+                    *self.status.lock().await = TaskStatus::Done {
+                        duration,
+                        output: output_stderr,
+                    };
+                    return Ok(());
                 },
 
                 _ = async {
@@ -435,6 +375,68 @@ impl Task {
         Ok(())
     }
 
+    /// Android has no render child to read (see `quad_main`), so the request goes
+    /// out as files, the render's surface is attached on the Android main thread,
+    /// and progress comes back as the appended event log.
+    #[cfg(target_os = "android")]
+    async fn run_local(&self) -> Result<()> {
+        if self.request_cancel.load(Ordering::Relaxed) {
+            return Ok(());
+        }
+
+        info!("Task #{} '{}' started ({})", self.id, self.name, self.params.path.display());
+
+        *self.status.lock().await = TaskStatus::Loading;
+
+        ipc::local::clear()?;
+        ipc::server::begin();
+        ipc::local::write_request(0, &serde_json::to_string(&self.params)?)?;
+        ipc::local::write_request(1, &serde_json::to_string(&self.output)?)?;
+        crate::android_render::start(self.params.config.resolution)?;
+
+        let mut progress = Progress::new();
+        let mut events_read = 0u64;
+        let mut pause_written = false;
+
+        loop {
+            for event in ipc::local::events(&mut events_read)? {
+                if let Some(duration) = progress.apply(event, &self.status).await {
+                    info!("Task #{} completed in {}", self.id, format_duration(Duration::from_secs_f64(duration)));
+                    *self.status.lock().await = TaskStatus::Done {
+                        duration,
+                        output: String::new(),
+                    };
+                    return Ok(());
+                }
+            }
+
+            if let Some(output) = ipc::local::failure() {
+                error!("Task #{} failed: {output}", self.id);
+                ipc::server::finish();
+                *self.status.lock().await = TaskStatus::Failed { output };
+                return Ok(());
+            }
+
+            if self.request_cancel.load(Ordering::Relaxed) {
+                info!("Task #{} cancelled", self.id);
+                ipc::local::write_command("cancel")?;
+                ipc::server::finish();
+                *self.status.lock().await = TaskStatus::Canceled { output: String::new() };
+                return Ok(());
+            }
+            let pause = self.request_pause.load(Ordering::Relaxed);
+            if pause && !pause_written {
+                ipc::local::write_command("pause")?;
+                pause_written = true;
+            } else if !pause && pause_written {
+                ipc::local::write_command("resume")?;
+                pause_written = false;
+            }
+
+            sleep(Duration::from_millis(150)).await;
+        }
+    }
+
     pub fn cancel(&self) {
         self.request_cancel.store(true, Ordering::Relaxed);
     }
@@ -461,9 +463,108 @@ impl Task {
     }
 }
 
+/// The numbers a task is watched by, worked out from the event stream whichever
+/// transport carried it here.
+struct Progress {
+    start: Instant,
+    total_mixing: u64,
+    total_frame: u64,
+    frame_samples: VecDeque<(f64, u64)>,
+    last_fps: u64,
+    pause_duration: Duration,
+    pause_start: Option<Instant>,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Self {
+            start: Instant::now(),
+            total_mixing: 0,
+            total_frame: 0,
+            frame_samples: VecDeque::new(),
+            last_fps: 0,
+            pause_duration: Duration::ZERO,
+            pause_start: None,
+        }
+    }
+
+    /// `Some(duration)` once the render says it is finished.
+    async fn apply(&mut self, event: IPCEvent, status: &Mutex<TaskStatus>) -> Option<f64> {
+        match event {
+            IPCEvent::Loading => {
+                *status.lock().await = TaskStatus::Loading;
+            },
+            IPCEvent::Mixing => {
+                *status.lock().await = TaskStatus::Mixing;
+            },
+            IPCEvent::MixingSfx(total) => {
+                *status.lock().await = TaskStatus::MixingSfx {
+                    progress: 0.0,
+                };
+                self.total_mixing = total;
+            },
+            IPCEvent::Sfx(completed) => {
+                *status.lock().await = TaskStatus::MixingSfx {
+                    progress: completed as f64 / self.total_mixing as f64,
+                };
+            },
+            IPCEvent::RenderFrame(total) => {
+                *status.lock().await = TaskStatus::Rendering {
+                    progress: 0.0,
+                    fps: 0,
+                    estimate: 0.0,
+                };
+                self.total_frame = total;
+            },
+            IPCEvent::Frame(completed) => {
+                let cur = self.start.elapsed().as_secs_f64() - self.pause_duration.as_secs_f64() - self.pause_start.map_or(0.0, |s| s.elapsed().as_secs_f64());
+                self.frame_samples.push_back((cur, completed));
+                while self.frame_samples.len() > 2 && self.frame_samples.get(1).is_some_and(|(time, _)| cur - *time > 1.0) {
+                    self.frame_samples.pop_front();
+                }
+                if let Some(&(sample_time, sample_frame)) = self.frame_samples.front() {
+                    let elapsed = cur - sample_time;
+                    if elapsed > 0.0 {
+                        self.last_fps = ((completed - sample_frame) as f64 / elapsed).round() as u64;
+                    }
+                }
+                let estimate = self.total_frame.saturating_sub(completed).max(1) as f64 / self.last_fps.max(1) as f64;
+                *status.lock().await = TaskStatus::Rendering {
+                    progress: completed as f64 / self.total_frame as f64,
+                    fps: self.last_fps,
+                    estimate,
+                };
+            },
+            IPCEvent::Paused => {
+                let mut guard = status.lock().await;
+                if let TaskStatus::Rendering { progress, .. } = *guard {
+                    *guard = TaskStatus::Paused { progress };
+                }
+                self.pause_start = Some(Instant::now());
+            },
+            IPCEvent::Resumed => {
+                if let Some(s) = self.pause_start.take() {
+                    self.pause_duration += s.elapsed();
+                }
+                self.frame_samples.clear();
+                self.last_fps = 0;
+                let mut guard = status.lock().await;
+                if let TaskStatus::Paused { progress } = *guard {
+                    *guard = TaskStatus::Rendering {
+                        progress,
+                        fps: 0,
+                        estimate: 0.0,
+                    };
+                }
+            },
+            IPCEvent::Done(duration) => return Some(duration),
+        }
+        None
+    }
+}
+
 #[derive(Serialize)]
-pub struct TaskView {
-    pub id: u32,
+pub struct TaskView {    pub id: u32,
     name: String,
     pub output: PathBuf,
     info: ChartInfo,

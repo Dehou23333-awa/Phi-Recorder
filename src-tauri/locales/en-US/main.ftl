@@ -6,6 +6,7 @@ tray-quit = Quit
 
 read-chart-failed = Failed to read chart
 load-info-failed = Failed to load chart info
+preview-unsupported = Preview is not available on Android yet
 
 preset-exists = Preset with the same name already exists
 preset-not-found = Specified preset not found

@@ -6,6 +6,7 @@ tray-quit = 退出
 
 read-chart-failed = 读取谱面失败
 load-info-failed = 加载谱面信息失败
+preview-unsupported = Android 上暂时还不能预览
 
 preset-exists = 同名配置已存在
 preset-not-found = 指定的配置不存在
