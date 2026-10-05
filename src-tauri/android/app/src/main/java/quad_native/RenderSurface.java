@@ -41,8 +41,12 @@ public final class RenderSurface {
     /** Called from Rust through JNI, on the Android main thread. */
     public static void start(Activity activity, int width, int height) {
         if (view != null) {
-            Log.w(TAG, "a render is already attached, ignoring");
-            return;
+            // The task that owned the previous render already saw its Done event,
+            // but this poll runs on its own clock, so the old overlay can still be
+            // up when the next task starts. Leaving it would refuse the new render
+            // and the new task would wait forever for events.
+            Log.i(TAG, "releasing the surface the previous render left");
+            detach();
         }
         host = activity;
         view = new QuadSurface(activity);

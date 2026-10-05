@@ -61,6 +61,11 @@ pub fn build_conf(headless: bool) -> macroquad::window::Conf {
             small: SMALL_ICON,
         }),
         headless,
+        // miniquad's Android default turns this on, and turning it on makes it
+        // call a `setFullScreen` method the host Activity has to provide -- the
+        // Tauri one does not, so the lookup aborts the whole process. The render
+        // draws into a view of its own, so nothing here needs the window state.
+        fullscreen: false,
         ..Default::default()
     }
 }
