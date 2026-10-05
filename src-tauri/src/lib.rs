@@ -113,6 +113,9 @@ pub fn run() -> Result<()> {
         .unwrap();
     let _guard = rt.enter();
 
+    // Only the desktop build reassigns the builder; the drag plugin has no
+    // mobile implementation.
+    #[cfg_attr(target_os = "android", allow(unused_mut))]
     let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
@@ -314,11 +317,14 @@ fn open_output_folder() -> Result<(), InvokeError> {
 /// every `std::fs` call rejects, so picked files are copied into the cache
 /// directory first. Elsewhere -- and for plain paths -- the argument is used as
 /// it came.
-fn picked_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf> {
+async fn picked_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf> {
     #[cfg(target_os = "android")]
     if path.to_string_lossy().starts_with("content://") {
         let dir = app.path().app_cache_dir()?.join("picked");
-        return android_uri::materialize(&dir, &path.to_string_lossy());
+        let uri = path.to_string_lossy().to_string();
+        // The copy itself can only run on the Android main thread, so wait for
+        // it from a blocking pool thread instead of a runtime worker.
+        return tokio::task::spawn_blocking(move || android_uri::materialize(&dir, &uri)).await?;
     }
     #[cfg(not(target_os = "android"))]
     let _ = app;
@@ -328,7 +334,7 @@ fn picked_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf> {
 #[tauri::command]
 async fn parse_chart(app: tauri::AppHandle, path: PathBuf) -> Result<ChartInfo, InvokeError> {
     wrap_async(async move {
-        let path = picked_path(&app, &path)?;
+        let path = picked_path(&app, &path).await?;
         let mut fs: Box<dyn FileSystem + Send + Sync + 'static> =
             fs::fs_from_file(&path).with_context(|| mtl!("read-chart-failed"))?;
         let info = fs::load_info(fs.deref_mut())
@@ -930,7 +936,7 @@ async fn save_info(path: String, info: ChartInfo) -> Result<(), InvokeError> {
 #[tauri::command]
 async fn read_info(app: tauri::AppHandle, path: String) -> Result<ChartInfo, InvokeError> {
     wrap_async(async move {
-        let file = picked_path(&app, &PathBuf::from(path))?;
+        let file = picked_path(&app, &PathBuf::from(path)).await?;
         info!("read: {}", file.display());
         let info = serde_yaml::from_reader(BufReader::new(std::fs::File::open(file)?))?;
         Ok(info)

@@ -53,10 +53,11 @@ fn copy(env: &mut JNIEnv, activity: &JObject, uri: &str, dir: &Path) -> Result<P
     let fd = env.call_method(&stream, "getFd", "()I", &[])?.i()?;
 
     let mut data = Vec::new();
-    // The fd is owned by the Java ParcelFileDescriptor, so Rust must not close it.
+    // The fd belongs to the Java ParcelFileDescriptor, so this must never run
+    // File's destructor: ManuallyDrop keeps it alive for the read, and Java
+    // closes it below.
     let mut file = ManuallyDrop::new(unsafe { std::fs::File::from_raw_fd(fd) });
     file.read_to_end(&mut data)?;
-    drop(file);
     env.call_method(&stream, "close", "()V", &[])?;
 
     std::fs::create_dir_all(dir)?;

@@ -376,13 +376,19 @@ pub fn find_ffmpeg() -> Result<Option<String>> {
     }
     #[cfg(target_os = "android")]
     {
+        // There is no install directory to search on Android, but a rooted device
+        // may still have a binary on PATH.
         let bundled = native_lib_dir().map(|dir| dir.join("libphi_ffmpeg.so"));
         if let Some(bundled) = bundled {
             if test_ffmpeg(&bundled) {
                 return Ok(Some(bundled.display().to_string()));
             }
         }
-        return Ok(None);
+        return Ok(if test_ffmpeg("ffmpeg") {
+            Some("ffmpeg".to_owned())
+        } else {
+            None
+        });
     }
     if test_ffmpeg("ffmpeg") {
         return Ok(Some("ffmpeg".to_owned()));
