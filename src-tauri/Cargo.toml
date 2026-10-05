@@ -40,7 +40,6 @@ tauri-plugin-http = "2.5.4"
 tauri-plugin-fs = "2.5.1"
 tauri-plugin-os = "2.3.2"
 regex = "1.9.6"
-tauri-plugin-cli = "2.4.1"
 tauri-plugin-dialog = "2.7.2"
 zip = "4.3.0"
 serde_yaml = "0.9.21"
@@ -48,7 +47,6 @@ tauri-plugin-prevent-default = "2.0.0"
 ndarray = "0.16.1"
 humantime = "2.2.0"
 rand = "0.9.1"
-tauri-plugin-drag = "2.1.0"
 tauri-plugin-opener = "2"
 rustc-hash = "2.1.2"
 num-complex = "0.4.6"
@@ -66,6 +64,10 @@ sasa = { git = "https://github.com/2278535805/sasa", default-features = false, f
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["cpal"] }
+# No mobile implementation: `drag` ships macOS/Windows/Linux backends only, and
+# the CLI plugin reads process arguments that do not exist on Android.
+tauri-plugin-drag = "2.1.0"
+tauri-plugin-cli = "2.4.1"
 
 [profile.release]
 lto = "thin"

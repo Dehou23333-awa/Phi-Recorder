@@ -102,19 +102,27 @@ pub fn run() -> Result<()> {
         .unwrap();
     let _guard = rt.enter();
 
-    let app = tauri::Builder::default()
+    let mut builder = tauri::Builder::default()
         .plugin(tauri_plugin_os::init())
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
-        .plugin(tauri_plugin_drag::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(
             tauri_plugin_prevent_default::Builder::new()
                 .with_flags(Flags::all().difference(Flags::FIND | Flags::RELOAD | Flags::FOCUS_MOVE | Flags::DEV_TOOLS))
-                .build()
-        )
+                .build(),
+        );
+
+    // The drag helper behind tauri-plugin-drag only implements macOS/Windows/Linux,
+    // so the plugin itself cannot be linked into the Android build.
+    #[cfg(not(target_os = "android"))]
+    {
+        builder = builder.plugin(tauri_plugin_drag::init());
+    }
+
+    let app = builder
         .manage(TaskQueue::new())
         .invoke_handler(tauri::generate_handler![
             exit_program,

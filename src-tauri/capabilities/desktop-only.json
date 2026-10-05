@@ -1,0 +1,16 @@
+{
+  "identifier": "desktop-only",
+  "description": "Permissions for plugins that have no mobile implementation",
+  "local": true,
+  "windows": [
+    "main"
+  ],
+  "platforms": [
+    "windows",
+    "linux",
+    "macOS"
+  ],
+  "permissions": [
+    "drag:default"
+  ]
+}
