@@ -450,8 +450,12 @@ async fn preview_play(params: RenderParams) -> Result<(), InvokeError> {
 }
 
 #[tauri::command]
-async fn post_render(queue: State<'_, TaskQueue>, params: RenderParams) -> Result<(), InvokeError> {
+async fn post_render(app: tauri::AppHandle, queue: State<'_, TaskQueue>, params: RenderParams) -> Result<(), InvokeError> {
     wrap_async(async move {
+        // The frontend keeps whatever the picker handed it, which on Android is
+        // a content:// URI the task's zip reader cannot open.
+        let mut params = params;
+        params.path = picked_path(&app, &params.path).await?;
         queue.post(params).await?;
         Ok(())
     })
