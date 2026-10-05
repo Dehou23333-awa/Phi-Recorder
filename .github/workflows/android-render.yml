@@ -201,25 +201,22 @@ jobs:
         run: python3 scripts/patch-android-gradle.py src-tauri/gen/android/app
 
       - name: Fetch the cross-built ffmpeg
+        if: needs.ffmpeg.result == 'success'
         uses: actions/download-artifact@v4
         with:
           name: ffmpeg-aarch64-linux-android
           path: ffmpeg-in
-          fail-on-missing: 'false'
 
       - name: Bundle the ffmpeg executable
+        if: needs.ffmpeg.result == 'success'
         run: |
           set -euo pipefail
           dest=src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
-          if [ -f ffmpeg-in/ffmpeg ]; then
-            mkdir -p "$dest"
-            # A .so name is what gets it unpacked to the executable native lib
-            # directory; nothing System.loadLibrary()s it.
-            install -m 755 ffmpeg-in/ffmpeg "$dest/libphi_ffmpeg.so"
-            ls -lh "$dest"
-          else
-            echo "::warning::ffmpeg job failed - building the APK without the encoder"
-          fi
+          mkdir -p "$dest"
+          # A .so name is what gets it unpacked to the executable native lib
+          # directory; nothing System.loadLibrary()s it.
+          install -m 755 ffmpeg-in/ffmpeg "$dest/libphi_ffmpeg.so"
+          ls -lh "$dest"
 
       - name: Bundle the C++ runtime the JNI library needs
         run: |
