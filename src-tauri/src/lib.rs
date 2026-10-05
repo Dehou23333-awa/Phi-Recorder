@@ -85,7 +85,8 @@ pub extern "C" fn quad_main() {
     // Not `run_wrapped`: its `exit_program` would take the whole app down, while
     // this process still owns the WebView.
     macroquad::Window::from_config(build_conf(true), async {
-        if let Err(err) = &render::main(false).await {
+        let outcome = render::main(false).await;
+        if let Err(err) = &outcome {
             error!("{err:?}");
             crate::ipc::server::report_failure(err);
         }

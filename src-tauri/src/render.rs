@@ -1509,9 +1509,10 @@ impl ReadbackPacker {
                 self.pixels.as_mut_ptr() as _,
             );
         }
-        for (row, source) in (0..self.height).rev().zip(self.pixels.chunks(self.stride)) {
-            let target = row * self.stride;
-            self.flipped[target..target + self.stride].copy_from_slice(source);
+        let stride = self.stride;
+        for (row, source) in (0..self.height).rev().zip(self.pixels.chunks(stride)) {
+            let target = row * stride;
+            self.flipped[target..target + stride].copy_from_slice(source);
         }
         input.write_all(&self.flipped)?;
         Ok(())

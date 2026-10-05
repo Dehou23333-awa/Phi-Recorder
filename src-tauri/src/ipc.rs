@@ -157,7 +157,7 @@ pub mod local {
     }
 
     pub fn read(name: &str) -> Option<String> {
-        std::fs::read_to_string(dir()?.join(name)).ok()
+        std::fs::read_to_string(dir().ok()?.join(name)).ok()
     }
 
     /// Events are appended instead of overwritten so that a poller slower than the
