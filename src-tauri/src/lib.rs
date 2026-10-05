@@ -67,6 +67,14 @@ async fn wrap_async<R>(f: impl Future<Output = Result<R>>) -> Result<R, InvokeEr
     })
 }
 
+// miniquad's Android backend emits a Native-Activity glue that calls `quad_main`,
+// and the Android linker refuses to dlopen a library holding an unresolved global
+// symbol -- so the cdylib has to define it even though a Tauri activity never
+// starts that glue (the WebView, not miniquad, owns the window here).
+#[cfg(target_os = "android")]
+#[no_mangle]
+pub extern "C" fn quad_main() {}
+
 fn run_wrapped(f: impl Future<Output = Result<()>> + 'static, headless: bool) {
     macroquad::Window::from_config(build_conf(headless), async {
         if let Err(err) = f.await {
