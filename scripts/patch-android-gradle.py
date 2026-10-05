@@ -22,6 +22,11 @@ PATCH = """
             useLegacyPackaging = true
         }
     }
+    lint {
+        // targetSdk 28 is the point, not an oversight: it is what lets the app
+        // exec the bundled ffmpeg. Sideloading is the distribution channel.
+        disable += "ExpiredTargetSdkVersion"
+    }
     buildTypes {
         getByName("release") {
             // Debug key: installable CI artifact without secrets. Replace before publishing.
@@ -53,7 +58,7 @@ def main() -> int:
         print(f"{gradle}: unpacked native libs + debug-signed release")
 
     gradle.write_text(text, encoding="utf-8")
-    for key in ("targetSdk", "useLegacyPackaging", "signingConfigs.getByName"):
+    for key in ("targetSdk", "useLegacyPackaging", "ExpiredTargetSdkVersion", "signingConfigs.getByName"):
         print(f"  {key}: {'ok' if key in text else 'MISSING'}")
     return 0
 

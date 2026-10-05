@@ -55,7 +55,7 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/ffmpeg-android
-          key: ffmpeg-android-${{ env.API }}-${{ env.FFMPEG_REF }}-${{ env.X264_REF }}
+          key: ffmpeg-android-v2-${{ env.API }}-${{ env.FFMPEG_REF }}-${{ env.X264_REF }}
 
       - name: Build x264 + ffmpeg
         env:

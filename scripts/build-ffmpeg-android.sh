@@ -47,7 +47,10 @@ fi
 # x264 and ffmpeg both derive their binutils from a `<triple>-` prefix, while the
 # NDK only ships `llvm-*` tools plus version-suffixed clang wrappers. Handing
 # them the names they ask for beats teaching every recipe the NDK's layout.
-CROSS_BIN="$PREFIX/cross-bin"
+# Kept outside PREFIX on purpose: actions/cache restores symlinks as plain text
+# files containing the target path, and bash then "executes" that text file.
+CROSS_BIN="${TMPDIR:-/tmp}/phi-ffmpeg-cross-bin"
+rm -rf "$CROSS_BIN"
 mkdir -p "$CROSS_BIN"
 for tool in ar nm objcopy objdump ranlib readelf strip; do
 	ln -sf "$TC/bin/llvm-$tool" "$CROSS_BIN/$TRIPLE-$tool"
