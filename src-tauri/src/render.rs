@@ -328,9 +328,20 @@ fn cmd_hidden(program: impl AsRef<OsStr>) -> Command {
 pub fn ffmpeg_command(path: impl AsRef<OsStr>) -> Command {
     #[cfg(target_os = "android")]
     {
-        let mut command = Command::new("/system/bin/linker64");
-        command.arg(path);
-        command
+        // targetSdk 28 is what allows the app to exec the ffmpeg binary unpacked
+        // into its native library directory. Running the process loader on it is
+        // only a fallback: /system/bin/linker64 belongs to the device's own ABI,
+        // so on an x86_64 target it rejects an AArch64 binary outright. A failed
+        // spawn (not a failed exit code) is what distinguishes the two cases.
+        static USE_LOADER: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        let use_loader = *USE_LOADER.get_or_init(|| Command::new(path.as_ref()).arg("-version").output().is_err());
+        if use_loader {
+            let mut command = Command::new("/system/bin/linker64");
+            command.arg(path);
+            command
+        } else {
+            Command::new(path.as_ref())
+        }
     }
     #[cfg(not(target_os = "android"))]
     {
