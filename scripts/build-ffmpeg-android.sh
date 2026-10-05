@@ -44,29 +44,26 @@ if [ -x "$PREFIX/bin/ffmpeg" ] && [ "${FORCE_REBUILD:-0}" != 1 ]; then
 	exit 0
 fi
 
-# x264 and ffmpeg both derive their binutils from a `<triple>-` prefix, while the
-# NDK only ships `llvm-*` tools plus version-suffixed clang wrappers. Handing
-# them the names they ask for beats teaching every recipe the NDK's layout.
-# Kept outside PREFIX on purpose: actions/cache restores symlinks as plain text
-# files containing the target path, and bash then "executes" that text file.
-CROSS_BIN="${TMPDIR:-/tmp}/phi-ffmpeg-cross-bin"
-rm -rf "$CROSS_BIN"
-mkdir -p "$CROSS_BIN"
-for tool in ar nm objcopy objdump ranlib readelf strip; do
-	ln -sf "$TC/bin/llvm-$tool" "$CROSS_BIN/$TRIPLE-$tool"
+# x264 and ffmpeg derive their binutils from a `<triple>-` prefix, a name the NDK
+# does not ship. Do NOT fake that with symlinks: `aarch64-linux-androidNN-clang`
+# is a shell wrapper that execs the `clang` sitting next to the path it was
+# *called through*, so invoking it via a link elsewhere dies with
+# ".../cross-bin/clang: No such file or directory". Give every tool its absolute
+# path instead; both configure scripts take theirs from the environment.
+TC_BIN="$TC/bin"
+CC="$TC_BIN/$TRIPLE$API-clang"
+CXX="$TC_BIN/$TRIPLE$API-clang++"
+AR="$TC_BIN/llvm-ar"
+RANLIB="$TC_BIN/llvm-ranlib"
+STRIP="$TC_BIN/llvm-strip"
+NM="$TC_BIN/llvm-nm"
+OBJCOPY="$TC_BIN/llvm-objcopy"
+export CC CXX AR RANLIB STRIP NM OBJCOPY
+
+for tool in "$CC" "$AR" "$RANLIB" "$STRIP" "$NM" "$OBJCOPY"; do
+	[ -x "$tool" ] || { echo "$tool is missing or not executable - did the NDK layout change?" >&2; exit 1; }
 done
-ln -sf "$TC/bin/$TRIPLE$API-clang" "$CROSS_BIN/$TRIPLE-clang"
-ln -sf "$TC/bin/$TRIPLE$API-clang++" "$CROSS_BIN/$TRIPLE-clang++"
-# x264 asks for <triple>-gcc rather than <triple>-clang.
-ln -sf "$TC/bin/$TRIPLE$API-clang" "$CROSS_BIN/$TRIPLE-gcc"
-ln -sf "$TC/bin/$TRIPLE$API-clang++" "$CROSS_BIN/$TRIPLE-g++"
-export PATH="$CROSS_BIN:$PATH"
-# configure scripts take the compiler from CC, not from a --cc option (x264 has
-# no such option and just warns it away).
-export CC="$TRIPLE-clang" CXX="$TRIPLE-clang++"
-# Resolve the compiler here, where the shell reports what is actually wrong,
-# rather than letting x264 reduce it to "No working C compiler found."
-"$CC" --version >/dev/null
+"$CC" --version | head -2
 
 # libx264 is the software encoder the app picks when hardware encoding is off,
 # so it is not optional for a usable build. Built static + PIC so ffmpeg can
@@ -77,7 +74,6 @@ if [ ! -e "$PREFIX/lib/libx264.a" ]; then
 		cd "$SRC_DIR/x264"
 		./configure \
 			--host="$TRIPLE" \
-			--cross-prefix="$TRIPLE-" \
 			--sysroot="$SYSROOT" \
 			--prefix="$PREFIX" \
 			--enable-static --enable-pic \
@@ -97,8 +93,9 @@ git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg.git 
 	PKG_CONFIG_PATH="$PREFIX/lib/pkgconfig" ./configure \
 		--target-os=android \
 		--arch=aarch64 --cpu=armv8-a \
-		--cross-prefix="$TRIPLE-" \
-		--cc="$TRIPLE-clang" --cxx="$TRIPLE-clang++" \
+		--cc="$CC" --cxx="$CXX" \
+		--ar="$AR" --ranlib="$RANLIB" --strip="$STRIP" \
+		--nm="$NM" --objcopy="$OBJCOPY" --objdump="$TC_BIN/llvm-objdump" \
 		--sysroot="$SYSROOT" \
 		--prefix="$PREFIX" \
 		--enable-cross-compile \
@@ -116,9 +113,9 @@ git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg.git 
 
 # The exec shim runs the binary through /system/bin/linker64, which loads
 # dynamic ELF - a static build would be silently unusable on device.
-"$TRIPLE-readelf" -h "$PREFIX/bin/ffmpeg" | tee /dev/stderr | grep -q 'Type: *DYN' || {
+"$TC_BIN/llvm-readelf" -h "$PREFIX/bin/ffmpeg" | tee /dev/stderr | grep -q 'Type: *DYN' || {
 	echo "ffmpeg is not a dynamic (PIE) executable" >&2
 	exit 1
 }
-"$TRIPLE-strip" --strip-unneeded "$PREFIX/bin/ffmpeg" || true
+"$STRIP" --strip-unneeded "$PREFIX/bin/ffmpeg" || true
 ls -lh "$PREFIX/bin/ffmpeg"
