@@ -424,7 +424,10 @@ pub fn get_encoder(
         return Some("mpeg4".to_string());
     };
 
-    if !config.hardware_accel {
+    if !config.hardware_accel || cfg!(target_os = "android") {
+        // The four hardware encoders below are desktop GPUs; the ffmpeg this app
+        // ships for Android has none of them, so a stored "hardware acceleration"
+        // setting would only end the render with no-hwacc.
         if config.hevc {
             return Some("libx265".to_string());
         } else {
