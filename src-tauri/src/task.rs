@@ -1,6 +1,6 @@
 use crate::{
     cmd_hidden,
-    common::{get_output_dir, read_config},
+    common::{get_output_dir, read_config, temp_file},
     ipc::IPCEvent,
     render::{RenderConfig, RenderParams},
     ASSET_PATH
@@ -218,7 +218,7 @@ impl Task {
     async fn new(id: u32, params: RenderParams) -> Result<Self> {
         let mut fs = fs::fs_from_file(&params.path)?;
         let info = params.info.clone();
-        let mut cover = NamedTempFile::new()?;
+        let mut cover = temp_file()?;
         cover.write_all(&fs.load_file(&info.illustration).await?)?;
 
         let file_name = generate_filename(&info, &params.config);

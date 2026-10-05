@@ -213,6 +213,16 @@ pub fn run() -> Result<()> {
                 .unwrap_or_else(|_| exe_dir.to_owned()),
         ))
         .ok();
+    // Desktop keeps the system temp directory; only Android lacks one.
+    #[cfg(target_os = "android")]
+    common::TEMP_DIR
+        .set(ensure_dir(
+            resolver
+                .app_cache_dir()
+                .unwrap_or_else(|_| exe_dir.to_owned())
+                .join("tmp"),
+        ))
+        .ok();
 
     // let asset_dir = resolver.resolve("assets", BaseDirectory::Config).unwrap();
     let asset_dir = exe_dir.join("assets");

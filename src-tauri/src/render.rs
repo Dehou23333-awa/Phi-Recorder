@@ -1005,9 +1005,9 @@ pub async fn main(cmd: bool) -> Result<()> {
     if ipc {
         send(IPCEvent::Mixing);
     }
-    let mut output_music_temp = NamedTempFile::new()?;
-    let mut output_sfx_temp = NamedTempFile::new()?;
-    let mut output_ending_temp = NamedTempFile::new()?;
+    let mut output_music_temp = crate::common::temp_file()?;
+    let mut output_sfx_temp = crate::common::temp_file()?;
+    let mut output_ending_temp = crate::common::temp_file()?;
 
     {
         let output_audio_time = Instant::now();

@@ -8,12 +8,23 @@ use std::{
     path::PathBuf,
     sync::OnceLock,
 };
+use tempfile::NamedTempFile;
 use zip::{write::FileOptions, ZipWriter, CompressionMethod};
 
 use crate::render::RenderConfig;
 
 pub static CONFIG_DIR: OnceLock<PathBuf> = OnceLock::new();
 pub static DATA_DIR: OnceLock<PathBuf> = OnceLock::new();
+pub static TEMP_DIR: OnceLock<PathBuf> = OnceLock::new();
+
+/// Android ships no `/tmp`, which is what `NamedTempFile::new` falls back to, so
+/// scratch files have to go somewhere the app owns.
+pub fn temp_file() -> Result<NamedTempFile> {
+    match TEMP_DIR.get() {
+        Some(dir) => Ok(NamedTempFile::new_in(dir)?),
+        None => Ok(NamedTempFile::new()?),
+    }
+}
 
 pub fn parse_args(args: Vec<String>) -> (Option<String>, Option<String>, Option<String>, Option<String>) {
     let mut args_input = None;
