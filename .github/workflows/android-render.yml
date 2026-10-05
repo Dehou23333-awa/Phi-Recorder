@@ -235,6 +235,18 @@ jobs:
             echo "::warning::libc++_shared.so not found under $NDK"
           fi
 
+      # miniquad's Android loader hands asset names straight to AAssetManager_open,
+      # which resolves them under the APK's assets/ root, while bundle.resources
+      # nests every target one level deeper (assets/assets/*). phire asks for
+      # "font.ttf" and "respack/info.yml", so the flat copy is what it needs.
+      - name: Bundle the renderer assets flat
+        run: |
+          set -euo pipefail
+          dest=src-tauri/gen/android/app/src/main/assets
+          mkdir -p "$dest"
+          cp -r src-tauri/assets/. "$dest/"
+          ls "$dest" | head -5
+
       - name: Build the APK
         run: pnpm exec tauri android build --target aarch64 --apk true --aab false --ci
 
@@ -245,6 +257,15 @@ jobs:
           echo "APK: $apk"
           ls -lh "$apk"
           unzip -l "$apk" | grep -E '\.so$|libphi_ffmpeg|ffmpeg' || true
+          # A missing asset surfaces on the device as a failed render and nowhere
+          # else, so check the layout the loader actually expects here.
+          for entry in assets/font.ttf assets/tips.txt assets/respack/info.yml; do
+            if ! unzip -l "$apk" | grep -q " $entry\$"; then
+              echo "::error::$entry is not at the root of the APK's assets"
+              exit 1
+            fi
+            echo "$entry present"
+          done
 
       - name: Upload the APK
         uses: actions/upload-artifact@v4
