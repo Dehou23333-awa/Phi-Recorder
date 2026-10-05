@@ -4,7 +4,11 @@
 # The resulting binary ships inside the APK as a JNI library, which is the only
 # app-owned location Android lets a process exec from, and it is what Phi
 # Recorder drives for the final encode.
-set -euo pipefail
+set -Eeuo pipefail
+
+# configure scripts put the actual failure in config.log and only print a
+# one-liner to stdout, which makes a CI log useless on its own.
+trap 'tail -40 "$(pwd)/config.log" 2>/dev/null || true' ERR
 
 : "${ANDROID_NDK_HOME:?ANDROID_NDK_HOME must point at an NDK (r26 or newer)}"
 
@@ -57,6 +61,9 @@ export PATH="$CROSS_BIN:$PATH"
 # configure scripts take the compiler from CC, not from a --cc option (x264 has
 # no such option and just warns it away).
 export CC="$TRIPLE-clang" CXX="$TRIPLE-clang++"
+# Resolve the compiler here, where the shell reports what is actually wrong,
+# rather than letting x264 reduce it to "No working C compiler found."
+"$CC" --version >/dev/null
 
 # libx264 is the software encoder the app picks when hardware encoding is off,
 # so it is not optional for a usable build. Built static + PIC so ffmpeg can
