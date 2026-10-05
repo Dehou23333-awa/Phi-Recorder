@@ -10,6 +10,9 @@ mod render;
 mod task;
 mod icon;
 
+#[cfg(target_os = "android")]
+mod android_uri;
+
 use anyhow::{bail, Context, Result};
 use common::{
     collect_chart_files, create_zip, ensure_dir, get_presets_json_file, get_presets_toml_file, get_rpe_dir, get_output_dir, respack_dir, save_presets, AppConfig, Extra, CONFIG_DIR, DATA_DIR
@@ -307,11 +310,27 @@ fn open_output_folder() -> Result<(), InvokeError> {
     .map_err(InvokeError::from_anyhow)
 }
 
+/// Android's file picker returns a `content://` URI rather than a path, which
+/// every `std::fs` call rejects, so picked files are copied into the cache
+/// directory first. Elsewhere -- and for plain paths -- the argument is used as
+/// it came.
+fn picked_path(app: &tauri::AppHandle, path: &Path) -> Result<PathBuf> {
+    #[cfg(target_os = "android")]
+    if path.to_string_lossy().starts_with("content://") {
+        let dir = app.path().app_cache_dir()?.join("picked");
+        return android_uri::materialize(&dir, &path.to_string_lossy());
+    }
+    #[cfg(not(target_os = "android"))]
+    let _ = app;
+    Ok(path.to_path_buf())
+}
+
 #[tauri::command]
-async fn parse_chart(path: &Path) -> Result<ChartInfo, InvokeError> {
+async fn parse_chart(app: tauri::AppHandle, path: PathBuf) -> Result<ChartInfo, InvokeError> {
     wrap_async(async move {
+        let path = picked_path(&app, &path)?;
         let mut fs: Box<dyn FileSystem + Send + Sync + 'static> =
-            fs::fs_from_file(path).with_context(|| mtl!("read-chart-failed"))?;
+            fs::fs_from_file(&path).with_context(|| mtl!("read-chart-failed"))?;
         let info = fs::load_info(fs.deref_mut())
             .await
             .with_context(|| mtl!("load-info-failed"))?;
@@ -909,9 +928,9 @@ async fn save_info(path: String, info: ChartInfo) -> Result<(), InvokeError> {
 }
 
 #[tauri::command]
-async fn read_info(path: String) -> Result<ChartInfo, InvokeError> {
+async fn read_info(app: tauri::AppHandle, path: String) -> Result<ChartInfo, InvokeError> {
     wrap_async(async move {
-        let file = PathBuf::from(path);
+        let file = picked_path(&app, &PathBuf::from(path))?;
         info!("read: {}", file.display());
         let info = serde_yaml::from_reader(BufReader::new(std::fs::File::open(file)?))?;
         Ok(info)

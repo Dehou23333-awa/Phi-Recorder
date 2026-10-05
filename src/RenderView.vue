@@ -8,7 +8,7 @@ const { t } = useI18n();
 import { invoke } from '@tauri-apps/api/core';
 import { event } from '@tauri-apps/api';
 
-import { toastError, RULES, toast, anyFilter, isString } from './common';
+import { toastError, RULES, toast, anyFilter, isAndroid, isString } from './common';
 import type { ChartInfo, FileDropEvent, RenderConfig } from './model';
 
 import { VForm } from 'vuetify/components';
@@ -38,13 +38,15 @@ const loadingChoosingChart = ref(false),
 async function chooseChart(folder?: boolean) {
   if (loadingChoosingChart.value) return;
   loadingChoosingChart.value = true;
+  const chartExtensions = ['zip', 'pez'];
+  if (isAndroid()) chartExtensions.push('*/*');
   let file = folder
     ? await dialog.open({ directory: true })
     : await dialog.open({
         filters: [
           {
             name: t('choose.chart-file'),
-            extensions: ['zip', 'pez'],
+            extensions: chartExtensions,
           },
           anyFilter(),
         ],

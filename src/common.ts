@@ -1,4 +1,5 @@
 import { toast as sonnerToast } from 'vuetify-sonner';
+import { platform } from '@tauri-apps/plugin-os';
 
 import { SUPPORTED_LOCALES, i18n } from './main';
 
@@ -12,6 +13,16 @@ export function anyFilter() {
     name: i18n.global.t('any-filter'),
     extensions: ['*'],
   };
+}
+
+let android: boolean | undefined;
+
+// Android's picker filters by MIME type, where a bare star means nothing, so a
+// filter list has to carry the star-slash-star wildcard instead: the dialog
+// plugin reads any entry containing a slash as a literal MIME type.
+export function isAndroid() {
+  android ??= platform() === 'android';
+  return android;
 }
 
 export function isString(s: unknown): s is string {

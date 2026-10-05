@@ -59,8 +59,13 @@ custom-protocol = ["tauri/custom-protocol"]
 
 # sasa picks its audio backend by feature, and cpal has no Android backend. Same
 # split phire makes: oboe on Android, cpal everywhere else.
+# wry/jni are already in the tree through tauri; they are named here to reach the
+# Activity through `wry::prelude::dispatch`, so the jni version must stay the one
+# wry 0.55 compiles against.
 [target.'cfg(target_os = "android")'.dependencies]
 sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["oboe"] }
+jni = "0.21"
+wry = "0.55"
 
 [target.'cfg(not(target_os = "android"))'.dependencies]
 sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["cpal"] }

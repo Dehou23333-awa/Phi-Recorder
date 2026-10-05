@@ -8,7 +8,7 @@ const { t } = useI18n();
 import { invoke } from '@tauri-apps/api/core';
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener';
 
-import { toastError, RULES, toast, anyFilter } from './common';
+import { toastError, RULES, toast, anyFilter, isAndroid } from './common';
 import { DEFAULT_RENDER_CONFIG, type ChartInfo, type RenderConfig, type RenderChart, type Preset, type FileDropEvent, type Task } from './model';
 import router from './router';
 import { AnsiUp } from 'ansi_up';
@@ -69,13 +69,15 @@ const autoChangeAspectRatio = useStorage<boolean>('BatchView.autoChangeAspectRat
 async function chooseChart(folder?: boolean) {
   if (loadingChoosingChart.value) return;
   loadingChoosingChart.value = true;
+  const chartExtensions = ['zip', 'pez'];
+  if (isAndroid()) chartExtensions.push('*/*');
   let file = folder
     ? await dialog.open({ directory: true, multiple: true })
     : await dialog.open({
         filters: [
           {
             name: t('choose.chart-file'),
-            extensions: ['zip', 'pez'],
+            extensions: chartExtensions,
           },
           anyFilter(),
         ],
