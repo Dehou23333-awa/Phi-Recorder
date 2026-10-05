@@ -54,9 +54,7 @@ jobs:
       - name: Cache the cross-built tree
         uses: actions/cache@v4
         with:
-          path: |
-            ${{ github.workspace }}/ffmpeg-android
-            ${{ github.workspace }}/ffmpeg-src
+          path: ${{ github.workspace }}/ffmpeg-android
           key: ffmpeg-android-${{ env.API }}-${{ env.FFMPEG_REF }}-${{ env.X264_REF }}
 
       - name: Build x264 + ffmpeg
@@ -190,11 +188,13 @@ jobs:
           MIN_SDK="$(grep -oE 'minSdk[ =]+[0-9]+' "$GRADLE_FILE" | grep -oE '[0-9]+' | head -1 || true)"
           echo "template asks for: compileSdk=${COMPILE_SDK:-36} buildTools=${BUILD_TOOLS:-AGP default} minSdk=${MIN_SDK:-unknown}"
           yes | "$SDKM" --licenses >/dev/null 2>&1 || true
-          # The template pins no buildToolsVersion, so AGP chooses its default;
-          # ship the candidates rather than trusting the image to have it.
-          PKGS=(platform-tools "platforms;android-${COMPILE_SDK:-36}" build-tools;35.0.0 build-tools;36.0.0)
-          [ -n "$BUILD_TOOLS" ] && PKGS+=("build-tools;$BUILD_TOOLS")
-          "$SDKM" --install "${PKGS[@]}"
+          # The template pins no buildToolsVersion, so AGP chooses its default.
+          # Offer the current candidates but never fail the job over a package
+          # that is not in the repository - AGP can fetch its own.
+          "$SDKM" --install platform-tools "platforms;android-${COMPILE_SDK:-36}"
+          for bt in 35.0.0 36.0.0 "$BUILD_TOOLS"; do
+            [ -n "$bt" ] && "$SDKM" --install "build-tools;$bt" || echo "build-tools;$bt unavailable, leaving it to AGP"
+          done
           ls "$SDK/platforms" "$SDK/build-tools"
 
       - name: Target API 28 and unpack native libraries

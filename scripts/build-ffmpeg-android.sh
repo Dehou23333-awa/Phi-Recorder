@@ -50,7 +50,13 @@ for tool in ar nm objcopy objdump ranlib readelf strip; do
 done
 ln -sf "$TC/bin/$TRIPLE$API-clang" "$CROSS_BIN/$TRIPLE-clang"
 ln -sf "$TC/bin/$TRIPLE$API-clang++" "$CROSS_BIN/$TRIPLE-clang++"
+# x264 asks for <triple>-gcc rather than <triple>-clang.
+ln -sf "$TC/bin/$TRIPLE$API-clang" "$CROSS_BIN/$TRIPLE-gcc"
+ln -sf "$TC/bin/$TRIPLE$API-clang++" "$CROSS_BIN/$TRIPLE-g++"
 export PATH="$CROSS_BIN:$PATH"
+# configure scripts take the compiler from CC, not from a --cc option (x264 has
+# no such option and just warns it away).
+export CC="$TRIPLE-clang" CXX="$TRIPLE-clang++"
 
 # libx264 is the software encoder the app picks when hardware encoding is off,
 # so it is not optional for a usable build. Built static + PIC so ffmpeg can
@@ -62,10 +68,9 @@ if [ ! -e "$PREFIX/lib/libx264.a" ]; then
 		./configure \
 			--host="$TRIPLE" \
 			--cross-prefix="$TRIPLE-" \
-			--cc="$TRIPLE-clang" \
 			--sysroot="$SYSROOT" \
 			--prefix="$PREFIX" \
-			--enable-static --enable-pic --disable-shared \
+			--enable-static --enable-pic \
 			--disable-cli --disable-opencl \
 			--extra-cflags="-O3"
 		make -j"$JOBS"
