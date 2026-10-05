@@ -28,7 +28,6 @@ macroquad = { git = "https://github.com/2278535805/macroquad", default-features 
 phire = { git = "https://github.com/Dehou23333-awa/phire", package = "phire", branch = "feat/blockarea", default-features = false, features = ["log", "video"] }
 # phire = { path = "../../phire/phire", default-features = false, features = ["log", "video"] }
 
-sasa = { git = "https://github.com/2278535805/sasa" }
 tokio = { version = "1.45.0", features = ["process", "rt-multi-thread", "fs"] }
 tracing = "0.1.37"
 tempfile = "3.16.0"
@@ -59,6 +58,14 @@ rayon = "1.10.0"
 
 [features]
 custom-protocol = ["tauri/custom-protocol"]
+
+# sasa picks its audio backend by feature, and cpal has no Android backend. Same
+# split phire makes: oboe on Android, cpal everywhere else.
+[target.'cfg(target_os = "android")'.dependencies]
+sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["oboe"] }
+
+[target.'cfg(not(target_os = "android"))'.dependencies]
+sasa = { git = "https://github.com/2278535805/sasa", default-features = false, features = ["cpal"] }
 
 [profile.release]
 lto = "thin"

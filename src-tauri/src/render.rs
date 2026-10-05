@@ -338,6 +338,21 @@ pub fn ffmpeg_command(path: impl AsRef<OsStr>) -> Command {
     }
 }
 
+/// Android only lets an app exec a binary that was unpacked into its native
+/// library directory, and that directory carries an install-time hash which
+/// changes on every update, so it is read back from `/proc/self/maps`.
+#[cfg(target_os = "android")]
+fn native_lib_dir() -> Option<std::path::PathBuf> {
+    let maps = std::fs::read_to_string("/proc/self/maps").ok()?;
+    const ABIS: [&str; 5] = ["arm64", "armeabi-v7a", "armeabi", "x86", "x86_64"];
+    maps.lines().find_map(|line| {
+        let path = std::path::Path::new(line.split_whitespace().last()?);
+        let dir = path.parent()?;
+        let abi = dir.file_name()?.to_str()?;
+        (dir.parent()?.file_name()? == "lib" && ABIS.contains(&abi)).then(|| dir.to_owned())
+    })
+}
+
 pub fn test_ffmpeg(path: impl AsRef<OsStr>) -> bool {
     matches!(ffmpeg_command(path).arg("-version").output(), Ok(_))
 }
@@ -347,6 +362,16 @@ pub fn find_ffmpeg() -> Result<Option<String>> {
         if test_ffmpeg(&ffmpeg_path) {
             return Ok(Some(ffmpeg_path));
         }
+    }
+    #[cfg(target_os = "android")]
+    {
+        let bundled = native_lib_dir().map(|dir| dir.join("libphi_ffmpeg.so"));
+        if let Some(bundled) = bundled {
+            if test_ffmpeg(&bundled) {
+                return Ok(Some(bundled.display().to_string()));
+            }
+        }
+        return Ok(None);
     }
     if test_ffmpeg("ffmpeg") {
         return Ok(Some("ffmpeg".to_owned()));

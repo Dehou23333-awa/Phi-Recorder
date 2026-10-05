@@ -1,4 +1,4 @@
-name: Phi Recorder Android (Plan B)
+name: Phi Recorder Android
 
 on:
   push:
@@ -6,89 +6,249 @@ on:
       - feat/android
   workflow_dispatch:
 
+concurrency:
+  group: android-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
-jobs:
-  android:
-    runs-on: ubuntu-24.04
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v6
+env:
+  # NDK API level the ffmpeg executable is built for; must not exceed the app's
+  # minSdk, or the device refuses to load it.
+  API: '24'
+  FFMPEG_REF: n7.1
+  X264_REF: stable
+  # Tag of TeamFlos/prpr-avc-ffmpeg holding the ffmpeg static libraries that
+  # phire's `video` feature links against.
+  AVC_TAG: 20260408_v0
 
-      - name: Setup Java
+jobs:
+  ffmpeg:
+    name: Cross-build ffmpeg (aarch64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install host tools
+        run: |
+          set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends autoconf libtool pkg-config python3
+
+      - name: Set up Android NDK
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ -n "${ANDROID_NDK_ROOT:-}" ] && [ -d "${ANDROID_NDK_ROOT}" ]; then
+            NDK="$ANDROID_NDK_ROOT"
+          else
+            # sdkmanager is not on PATH on the runner image, so call it by path.
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;27.2.12479018'
+            NDK="$SDK/ndk/27.2.12479018"
+          fi
+          echo "ANDROID_NDK_HOME=$NDK" >>"$GITHUB_ENV"
+          ls "$NDK/toolchains/llvm/prebuilt"
+
+      - name: Cache the cross-built tree
+        uses: actions/cache@v4
+        with:
+          path: |
+            ${{ github.workspace }}/ffmpeg-android
+            ${{ github.workspace }}/ffmpeg-src
+          key: ffmpeg-android-${{ env.API }}-${{ env.FFMPEG_REF }}-${{ env.X264_REF }}
+
+      - name: Build x264 + ffmpeg
+        env:
+          PREFIX: ${{ github.workspace }}/ffmpeg-android
+          SRC_DIR: ${{ github.workspace }}/ffmpeg-src
+        run: bash scripts/build-ffmpeg-android.sh
+
+      - name: Upload ffmpeg
+        uses: actions/upload-artifact@v4
+        with:
+          name: ffmpeg-aarch64-linux-android
+          path: ${{ github.workspace }}/ffmpeg-android/bin/ffmpeg
+          if-no-files-found: error
+
+  apk:
+    name: Build arm64-v8a APK
+    runs-on: ubuntu-latest
+    needs: ffmpeg
+    # Keep going when the ffmpeg build fails: the Rust/Gradle errors are a
+    # separate question and a round of CI is not free.
+    if: always()
+    env:
+      PRPR_AVC_LIBS: ${{ github.workspace }}/src-tauri/static-lib
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inventory the runner's Android setup
+        run: |
+          set -uo pipefail
+          echo "ANDROID_HOME=${ANDROID_HOME:-unset}"
+          echo "ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-unset}"
+          echo "ANDROID_NDK_ROOT=${ANDROID_NDK_ROOT:-unset}"
+          echo "ANDROID_NDK_LATEST_HOME=${ANDROID_NDK_LATEST_HOME:-unset}"
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "== $SDK"; ls "$SDK"
+          echo "== platforms"; ls "$SDK/platforms" 2>/dev/null
+          echo "== build-tools"; ls "$SDK/build-tools" 2>/dev/null
+          echo "== ndk"; ls "$SDK/ndk" 2>/dev/null
+          echo "== cmdline-tools"; ls "$SDK/cmdline-tools" 2>/dev/null
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
 
-      - name: Install Android SDK components
+      # `tauri android init` refuses to run without an NDK, and cargo-ndk reads
+      # the same variables, so point all of the spellings at one directory.
+      - name: Set up Android NDK
         run: |
-          echo "ANDROID_SDK_ROOT=$ANDROID_HOME" >> "$GITHUB_ENV"
-          yes | sdkmanager --licenses >/dev/null
-          sdkmanager 'platform-tools' 'platforms;android-35' 'build-tools;35.0.0' 'ndk;27.2.12479018'
-          echo "ANDROID_NDK_HOME=$ANDROID_HOME/ndk/27.2.12479018" >> "$GITHUB_ENV"
+          set -euo pipefail
+          SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-/usr/local/lib/android/sdk}}"
+          if [ -n "${ANDROID_NDK_ROOT:-}" ] && [ -d "${ANDROID_NDK_ROOT}" ]; then
+            NDK="$ANDROID_NDK_ROOT"
+          else
+            yes | "$SDK/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null 2>&1 || true
+            "$SDK/cmdline-tools/latest/bin/sdkmanager" --install 'ndk;27.2.12479018'
+            NDK="$SDK/ndk/27.2.12479018"
+          fi
+          {
+            echo "ANDROID_HOME=$SDK"
+            echo "ANDROID_SDK_ROOT=$SDK"
+            echo "ANDROID_NDK_HOME=$NDK"
+            echo "ANDROID_NDK_ROOT=$NDK"
+            echo "NDK_HOME=$NDK"
+          } >>"$GITHUB_ENV"
+          echo "NDK: $NDK"
 
-      - name: Setup Rust
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.14'
+
+      - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: aarch64-linux-android
 
+      - name: Cache Rust builds
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri
+          cache-on-failure: 'true'
+
       - name: Install cargo-ndk
         run: cargo install cargo-ndk --locked
 
-      - name: Setup pnpm
+      - name: Set up pnpm
         uses: pnpm/action-setup@v4
         with:
           version: 9
 
       - name: Install frontend dependencies
-        run: pnpm install
+        run: pnpm install --no-frozen-lockfile
 
-      - name: Initialize Tauri Android project
-        run: pnpm exec tauri android init --ci --skip-targets-install
-
-      - name: Set Android target SDK to 28
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          from pathlib import Path
-          import re
-
-          root = Path('src-tauri/gen/android/app')
-          files = list(root.glob('build.gradle')) + list(root.glob('build.gradle.kts'))
-          if not files:
-              raise SystemExit(f'No generated app Gradle file found under {root}')
-          for path in files:
-              text = path.read_text(encoding='utf-8')
-              updated, count = re.subn(r'targetSdk\s*=\s*\d+', 'targetSdk = 28', text)
-              if count:
-                  path.write_text(updated, encoding='utf-8')
-                  print(f'{path}: patched {count} targetSdk value(s)')
-          if not any('targetSdk = 28' in path.read_text(encoding='utf-8') for path in files):
-              raise SystemExit('Could not set generated Android targetSdk to 28')
-          PY
-
-      - name: Fetch prpr-avc Android static libraries
-        shell: bash
+      # src-tauri/build.rs adds static-lib/<TARGET> to the linker search path and
+      # phire's `video` feature needs ffmpeg's libraries there; the directory is
+      # gitignored because of its size.
+      - name: Fetch ffmpeg static libraries
         run: |
           set -euo pipefail
-          dest="$GITHUB_WORKSPACE/src-tauri/static-lib/aarch64-linux-android"
+          dest="src-tauri/static-lib/aarch64-linux-android"
           mkdir -p "$dest"
           curl -fsSL --retry 3 \
-            'https://github.com/TeamFlos/prpr-avc-ffmpeg/releases/download/20260408_v0/aarch64-linux-android.tar.gz' \
-            -o /tmp/prpr-avc-android.tar.gz
-          tar -xzf /tmp/prpr-avc-android.tar.gz -C "$dest"
+            "https://github.com/TeamFlos/prpr-avc-ffmpeg/releases/download/${AVC_TAG}/aarch64-linux-android.tar.gz" \
+            -o /tmp/avc.tar.gz
+          tar -xzf /tmp/avc.tar.gz -C "$dest"
           ls -lh "$dest"
+          # A static library mismatch only shows up as an UnsatisfiedLinkError on
+          # launch, never as a link error, so check the symbols now.
+          for sym in swr_alloc_set_opts swr_convert avcodec_open2 avformat_open_input; do
+            if ! nm -g --defined-only "$dest"/*.a 2>/dev/null | grep -qw "$sym"; then
+              echo "::error::$sym missing from the ffmpeg static libs (tag ${AVC_TAG})"
+              exit 1
+            fi
+          done
+          echo "ffmpeg symbol check passed"
 
-      - name: Build Android APK
-        env:
-          PRPR_AVC_LIBS: ${{ github.workspace }}/src-tauri/static-lib
+      - name: Generate the Android project
+        run: pnpm exec tauri android init --ci --skip-targets-install
+
+      - name: Match the SDK components the template asks for
+        run: |
+          set -euo pipefail
+          SDK="${ANDROID_HOME:?ANDROID_HOME should be exported by the runner image}"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
+          GRADLE_FILE=src-tauri/gen/android/app/build.gradle.kts
+          COMPILE_SDK="$(grep -oE 'compileSdk[ =]+[0-9]+' "$GRADLE_FILE" | grep -oE '[0-9]+' | head -1 || true)"
+          BUILD_TOOLS="$(grep -oE 'buildToolsVersion *= *"[0-9.]+"' "$GRADLE_FILE" | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -1 || true)"
+          MIN_SDK="$(grep -oE 'minSdk[ =]+[0-9]+' "$GRADLE_FILE" | grep -oE '[0-9]+' | head -1 || true)"
+          echo "template asks for: compileSdk=${COMPILE_SDK:-36} buildTools=${BUILD_TOOLS:-AGP default} minSdk=${MIN_SDK:-unknown}"
+          yes | "$SDKM" --licenses >/dev/null 2>&1 || true
+          # The template pins no buildToolsVersion, so AGP chooses its default;
+          # ship the candidates rather than trusting the image to have it.
+          PKGS=(platform-tools "platforms;android-${COMPILE_SDK:-36}" build-tools;35.0.0 build-tools;36.0.0)
+          [ -n "$BUILD_TOOLS" ] && PKGS+=("build-tools;$BUILD_TOOLS")
+          "$SDKM" --install "${PKGS[@]}"
+          ls "$SDK/platforms" "$SDK/build-tools"
+
+      - name: Target API 28 and unpack native libraries
+        run: python3 scripts/patch-android-gradle.py src-tauri/gen/android/app
+
+      - name: Fetch the cross-built ffmpeg
+        uses: actions/download-artifact@v4
+        with:
+          name: ffmpeg-aarch64-linux-android
+          path: ffmpeg-in
+          fail-on-missing: 'false'
+
+      - name: Bundle the ffmpeg executable
+        run: |
+          set -euo pipefail
+          dest=src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
+          if [ -f ffmpeg-in/ffmpeg ]; then
+            mkdir -p "$dest"
+            # A .so name is what gets it unpacked to the executable native lib
+            # directory; nothing System.loadLibrary()s it.
+            install -m 755 ffmpeg-in/ffmpeg "$dest/libphi_ffmpeg.so"
+            ls -lh "$dest"
+          else
+            echo "::warning::ffmpeg job failed - building the APK without the encoder"
+          fi
+
+      - name: Bundle the C++ runtime the JNI library needs
+        run: |
+          set -euo pipefail
+          NDK="${ANDROID_NDK_HOME:?}"
+          dest=src-tauri/gen/android/app/src/main/jniLibs/arm64-v8a
+          src="$(find "$NDK/toolchains/llvm/prebuilt" -path '*/aarch64-linux-android/libc++_shared.so' | head -1)"
+          if [ -n "$src" ]; then
+            mkdir -p "$dest"
+            cp "$src" "$dest/libc++_shared.so"
+            echo "bundled $src"
+          else
+            echo "::warning::libc++_shared.so not found under $NDK"
+          fi
+
+      - name: Build the APK
         run: pnpm exec tauri android build --target aarch64 --apk true --aab false --ci
 
-      - name: Upload Android APK
+      - name: Report what ended up in the APK
+        run: |
+          set -uo pipefail
+          apk="$(find src-tauri/gen/android/app/build/outputs/apk -name '*.apk' | head -1)"
+          echo "APK: $apk"
+          ls -lh "$apk"
+          unzip -l "$apk" | grep -E '\.so$|libphi_ffmpeg|ffmpeg' || true
+
+      - name: Upload the APK
         uses: actions/upload-artifact@v4
         with:
-          name: phi-recorder-android-arm64-plan-b-smoke
+          name: phi-recorder-android-arm64-v8a
           path: src-tauri/gen/android/app/build/outputs/apk/**/*.apk
           if-no-files-found: error
