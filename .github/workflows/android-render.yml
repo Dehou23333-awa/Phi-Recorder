@@ -55,6 +55,9 @@ jobs:
         uses: actions/cache@v4
         with:
           path: ${{ github.workspace }}/ffmpeg-android
+          # Keep a finished x264 even when the ffmpeg step afterwards fails; the
+          # script only reuses artefacts it checks for by path.
+          save-always: 'true'
           key: ffmpeg-android-v2-${{ env.API }}-${{ env.FFMPEG_REF }}-${{ env.X264_REF }}
 
       - name: Build x264 + ffmpeg

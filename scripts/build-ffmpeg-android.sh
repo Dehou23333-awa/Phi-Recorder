@@ -57,10 +57,9 @@ AR="$TC_BIN/llvm-ar"
 RANLIB="$TC_BIN/llvm-ranlib"
 STRIP="$TC_BIN/llvm-strip"
 NM="$TC_BIN/llvm-nm"
-OBJCOPY="$TC_BIN/llvm-objcopy"
-export CC CXX AR RANLIB STRIP NM OBJCOPY
+export CC CXX AR RANLIB STRIP NM
 
-for tool in "$CC" "$AR" "$RANLIB" "$STRIP" "$NM" "$OBJCOPY"; do
+for tool in "$CC" "$AR" "$RANLIB" "$STRIP" "$NM"; do
 	[ -x "$tool" ] || { echo "$tool is missing or not executable - did the NDK layout change?" >&2; exit 1; }
 done
 "$CC" --version | head -2
@@ -95,7 +94,7 @@ git clone --depth 1 --branch "$FFMPEG_REF" https://github.com/FFmpeg/FFmpeg.git 
 		--arch=aarch64 --cpu=armv8-a \
 		--cc="$CC" --cxx="$CXX" \
 		--ar="$AR" --ranlib="$RANLIB" --strip="$STRIP" \
-		--nm="$NM" --objcopy="$OBJCOPY" --objdump="$TC_BIN/llvm-objdump" \
+		--nm="$NM" \
 		--sysroot="$SYSROOT" \
 		--prefix="$PREFIX" \
 		--enable-cross-compile \
