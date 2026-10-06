@@ -96,6 +96,7 @@ pub struct RenderConfig {
     pub preserve_framebuffer: bool,
     pub render_extra: bool,
     pub render_block_area: bool,
+    pub block_area_simple: bool,
     /// Noise-field animation clock offset relative to song time, in seconds.
     /// Phigros drives it from Unity `Time.time` (since app launch), so the
     /// launch-to-song latency shifts the whole pattern; tune this to align.
@@ -182,6 +183,7 @@ impl RenderConfig {
             preserve_framebuffer: self.preserve_framebuffer,
             render_extra: self.render_extra,
             render_block_area: self.render_block_area,
+            block_area_simple: self.block_area_simple,
             block_area_clock_offset: self.block_area_clock_offset,
             bg_blurriness: self.bg_blurriness,
 
@@ -265,6 +267,7 @@ impl Default for RenderConfig {
             preserve_framebuffer: false,
             render_extra: true,
             render_block_area: true,
+            block_area_simple: false,
             block_area_clock_offset: 0.,
             bg_blurriness: 80.,
 
