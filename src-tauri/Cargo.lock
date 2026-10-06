@@ -132,7 +132,7 @@ version = "1.1.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "40c48f72fd53cd289104fc64099abca73db4166ad86ea0b4341abe65af83dadc"
 dependencies = [
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -143,7 +143,7 @@ checksum = "291e6a250ff86cd4a820112fb8898808a366d8f9f58ce16d1f538353ad55747d"
 dependencies = [
  "anstyle",
  "once_cell_polyfill",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -913,7 +913,7 @@ dependencies = [
  "alsa",
  "coreaudio-rs",
  "dasp_sample",
- "jni 0.21.1",
+ "jni",
  "js-sys",
  "libc",
  "mach2",
@@ -1206,7 +1206,7 @@ dependencies = [
  "libc",
  "option-ext",
  "redox_users",
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -1458,7 +1458,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "39cab71617ae0d63f51a36d69f866391735b51691dbda63cf6f96d042b63efeb"
 dependencies = [
  "libc",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -2351,8 +2351,8 @@ dependencies = [
 
 [[package]]
 name = "hms-opengtx-binding"
-version = "0.1.2"
-source = "git+https://github.com/ohos-rs/ohos-native-bindings#93fa86c973d99b1b5b9b26135dc761ea8b9d52f8"
+version = "0.1.3"
+source = "git+https://github.com/ohos-rs/ohos-native-bindings#87b1b07aa5353ef0319b74cadc75c47cfae370b0"
 dependencies = [
  "hms-opengtx-sys",
  "ohos-enum-derive 0.1.1 (git+https://github.com/ohos-rs/ohos-native-bindings)",
@@ -2360,8 +2360,8 @@ dependencies = [
 
 [[package]]
 name = "hms-opengtx-sys"
-version = "0.1.2"
-source = "git+https://github.com/ohos-rs/ohos-native-bindings#93fa86c973d99b1b5b9b26135dc761ea8b9d52f8"
+version = "0.1.3"
+source = "git+https://github.com/ohos-rs/ohos-native-bindings#87b1b07aa5353ef0319b74cadc75c47cfae370b0"
 
 [[package]]
 name = "html5ever"
@@ -2498,7 +2498,7 @@ dependencies = [
  "js-sys",
  "log",
  "wasm-bindgen",
- "windows-core 0.62.2",
+ "windows-core 0.58.0",
 ]
 
 [[package]]
@@ -2689,34 +2689,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "inputbox"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4ba22626ab6b93179565f33d6b48ff19e1919bb0539c642f71f18f36ef321d49"
-dependencies = [
- "block2",
- "cfg-if",
- "inputbox-android",
- "jni 0.22.4",
- "log",
- "napi-derive-ohos",
- "napi-ohos",
- "objc2",
- "objc2-core-foundation",
- "objc2-foundation",
- "objc2-ui-kit",
- "once_cell",
- "serde_json",
- "which",
-]
-
-[[package]]
-name = "inputbox-android"
-version = "0.1.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0d448abcdc72ced6968cd6fe112acbab565f74d5acb44e274d8fbccfbe76143b"
-
-[[package]]
 name = "intl-memoizer"
 version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2818,36 +2790,6 @@ dependencies = [
  "thiserror 1.0.69",
  "walkdir",
  "windows-sys 0.45.0",
-]
-
-[[package]]
-name = "jni"
-version = "0.22.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5efd9a482cf3a427f00d6b35f14332adc7902ce91efb778580e180ff90fa3498"
-dependencies = [
- "cfg-if",
- "combine",
- "jni-macros",
- "jni-sys 0.4.1",
- "log",
- "simd_cesu8",
- "thiserror 2.0.19",
- "walkdir",
- "windows-link 0.2.1",
-]
-
-[[package]]
-name = "jni-macros"
-version = "0.22.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a00109accc170f0bdb141fed3e393c565b6f5e072365c3bd58f5b062591560a3"
-dependencies = [
- "proc-macro2",
- "quote",
- "rustc_version",
- "simd_cesu8",
- "syn 2.0.119",
 ]
 
 [[package]]
@@ -3186,8 +3128,8 @@ dependencies = [
 
 [[package]]
 name = "macroquad"
-version = "0.4.15"
-source = "git+https://github.com/2278535805/macroquad#e60df3881813577e3cb34cd80317fca8c479f1af"
+version = "0.4.16"
+source = "git+https://github.com/2278535805/macroquad#aa952e87a2bcf435553b7c6b56b286755fa5b02e"
 dependencies = [
  "fontdue",
  "glam 0.27.0",
@@ -3200,7 +3142,7 @@ dependencies = [
 [[package]]
 name = "macroquad_macro"
 version = "0.1.8"
-source = "git+https://github.com/2278535805/macroquad#e60df3881813577e3cb34cd80317fca8c479f1af"
+source = "git+https://github.com/2278535805/macroquad#aa952e87a2bcf435553b7c6b56b286755fa5b02e"
 
 [[package]]
 name = "malloc_buf"
@@ -3265,10 +3207,10 @@ checksum = "6877bb514081ee2a7ff5ef9de3281f14a4dd4bceac4c09388074a6b5df8a139a"
 [[package]]
 name = "miniquad"
 version = "0.4.10"
-source = "git+https://github.com/2278535805/miniquad#82538d37d6939ca70819dca8bfd01c213300f642"
+source = "git+https://github.com/2278535805/miniquad#cccbc8194b8ad77e36d078b11ff01d4e617198d2"
 dependencies = [
  "hms-opengtx-binding",
- "jni 0.21.1",
+ "jni",
  "keyboard-types 0.8.3",
  "libc",
  "napi-build-ohos",
@@ -3334,7 +3276,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3521,7 +3463,7 @@ version = "0.50.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7957b9740744892f114936ab4a57b3f487491bbeafaf8083688b16841a4240e5"
 dependencies = [
- "windows-sys 0.59.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -3607,7 +3549,7 @@ version = "0.7.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "680998035259dcfcafe653688bf2aa6d3e2dc05e98be6ab46afb089dc84f1df8"
 dependencies = [
- "proc-macro-crate 1.3.1",
+ "proc-macro-crate 2.0.2",
  "proc-macro2",
  "quote",
  "syn 2.0.119",
@@ -3745,9 +3687,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2a180dd8642fa45cdb7dd721cd4c11b1cadd4929ce112ebd8b9f5803cc79d536"
 dependencies = [
  "bitflags 2.13.1",
- "block2",
  "dispatch2",
- "libc",
  "objc2",
 ]
 
@@ -3971,12 +3911,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "ohos-audio-sys"
-version = "0.0.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "892313a2851bbb13c11ba075768ef0d0a9a6a8ae53e54641c9c56eda726dc87f"
-
-[[package]]
 name = "ohos-bundle-binding"
 version = "0.1.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4015,7 +3949,7 @@ dependencies = [
 [[package]]
 name = "ohos-enum-derive"
 version = "0.1.1"
-source = "git+https://github.com/ohos-rs/ohos-native-bindings#93fa86c973d99b1b5b9b26135dc761ea8b9d52f8"
+source = "git+https://github.com/ohos-rs/ohos-native-bindings#87b1b07aa5353ef0319b74cadc75c47cfae370b0"
 dependencies = [
  "convert_case 0.6.0",
  "proc-macro2",
@@ -4309,7 +4243,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
 dependencies = [
  "libc",
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -4494,7 +4428,7 @@ dependencies = [
 [[package]]
 name = "phire"
 version = "0.4.0"
-source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#5c97056ebc40c429f27e5c2d8d80c638305f3568"
+source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#69f10c17e86bbe238d0fd87d12c7ac9e6fc6337c"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -4517,7 +4451,6 @@ dependencies = [
  "hex",
  "hmac",
  "image",
- "inputbox",
  "intl-memoizer",
  "js-sys",
  "lazy_static",
@@ -4770,7 +4703,7 @@ dependencies = [
 [[package]]
 name = "prpr-avc"
 version = "0.1.0"
-source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#5c97056ebc40c429f27e5c2d8d80c638305f3568"
+source = "git+https://github.com/Dehou23333-awa/phire?branch=feat/blockarea#69f10c17e86bbe238d0fd87d12c7ac9e6fc6337c"
 dependencies = [
  "anyhow",
  "sasa",
@@ -4894,7 +4827,7 @@ dependencies = [
  "once_cell",
  "socket2",
  "tracing",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5316,7 +5249,7 @@ dependencies = [
  "errno",
  "libc",
  "linux-raw-sys 0.12.1",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5363,7 +5296,7 @@ checksum = "1d99feebc72bae7ab76ba994bb5e121b8d83d910ca40b36e0921f53becc41784"
 dependencies = [
  "core-foundation 0.10.1",
  "core-foundation-sys",
- "jni 0.21.1",
+ "jni",
  "log",
  "once_cell",
  "rustls",
@@ -5373,7 +5306,7 @@ dependencies = [
  "security-framework",
  "security-framework-sys",
  "webpki-root-certs",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -5425,14 +5358,13 @@ dependencies = [
 
 [[package]]
 name = "sasa"
-version = "0.1.0"
-source = "git+https://github.com/2278535805/sasa#3f229a822c71c2391dbfc1a254dacaa0bb67d11e"
+version = "0.2.0"
+source = "git+https://github.com/2278535805/sasa#9158ea984d341ad42dc6c8a99219f9a4d55bf9ae"
 dependencies = [
  "anyhow",
  "atomic_float",
  "cpal",
  "oboe",
- "ohos-audio-sys",
  "parking_lot",
  "ringbuf",
  "symphonia",
@@ -5845,22 +5777,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3a219298ac11a56ea9a6d2120044824d6f01aeb034955e7af7bc16858527deea"
 
 [[package]]
-name = "simd_cesu8"
-version = "1.2.0"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "11031e251abf8611c80f460e19dbdeb54a66db918e49c65a7065b46ac7aec520"
-dependencies = [
- "rustc_version",
- "simdutf8",
-]
-
-[[package]]
-name = "simdutf8"
-version = "0.1.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e3a9fe34e3e7a50316060351f37187a3f546bce95496156754b601a5fa71b76e"
-
-[[package]]
 name = "siphasher"
 version = "1.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -5885,7 +5801,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c3d1e2c7f27f8d4cb10542a02c49005dbd6e93095799d6f3be745fae9f8fedd4"
 dependencies = [
  "libc",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -6287,7 +6203,7 @@ dependencies = [
  "gdkwayland-sys",
  "gdkx11-sys",
  "gtk",
- "jni 0.21.1",
+ "jni",
  "libc",
  "log",
  "ndk",
@@ -6344,7 +6260,7 @@ dependencies = [
  "heck 0.5.0",
  "http",
  "http-range",
- "jni 0.21.1",
+ "jni",
  "libc",
  "log",
  "mime",
@@ -6637,7 +6553,7 @@ dependencies = [
  "dpi",
  "gtk",
  "http",
- "jni 0.21.1",
+ "jni",
  "objc2",
  "objc2-ui-kit",
  "objc2-web-kit",
@@ -6660,7 +6576,7 @@ checksum = "4e6fac707727b7a2f48e4ded90976324267371073edbb415ffb73bb0458d203f"
 dependencies = [
  "gtk",
  "http",
- "jni 0.21.1",
+ "jni",
  "log",
  "objc2",
  "objc2-app-kit",
@@ -6734,10 +6650,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.3.4",
+ "getrandom 0.4.3",
  "once_cell",
  "rustix 1.1.4",
- "windows-sys 0.52.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7185,7 +7101,7 @@ dependencies = [
  "png 0.18.1",
  "serde",
  "thiserror 2.0.19",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7244,7 +7160,7 @@ checksum = "f2f6fb2847f6742cd76af783a2a2c49e9375d0a111c7bef6f71cd9e738c72d6e"
 dependencies = [
  "memoffset",
  "tempfile",
- "windows-sys 0.60.2",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7681,15 +7597,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
-name = "which"
-version = "8.0.5"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "8f3ef584124b911bcc3875c2f1472e80f24361ceb789bd1c62b3e9a3df9ff43c"
-dependencies = [
- "libc",
-]
-
-[[package]]
 name = "wide"
 version = "0.7.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -7721,7 +7628,7 @@ version = "0.1.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "c2a7b1c03c876122aa43f3020e6c3c3ee5c05081c9a00739faf7503aeba10d22"
 dependencies = [
- "windows-sys 0.48.0",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]
@@ -7832,19 +7739,6 @@ dependencies = [
  "windows-link 0.1.3",
  "windows-result 0.3.4",
  "windows-strings 0.4.2",
-]
-
-[[package]]
-name = "windows-core"
-version = "0.62.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b8e83a14d34d0623b51dce9581199302a221863196a1dde71a7663a4c2be9deb"
-dependencies = [
- "windows-implement 0.60.2",
- "windows-interface 0.59.3",
- "windows-link 0.2.1",
- "windows-result 0.4.1",
- "windows-strings 0.5.1",
 ]
 
 [[package]]
@@ -8400,7 +8294,7 @@ dependencies = [
  "gtk",
  "http",
  "javascriptcore-rs",
- "jni 0.21.1",
+ "jni",
  "libc",
  "ndk",
  "objc2",
