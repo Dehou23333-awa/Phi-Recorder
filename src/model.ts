@@ -144,7 +144,6 @@ export interface RenderConfig {
   preserveFramebuffer: boolean;
   renderExtra: boolean;
   renderBlockArea: boolean;
-  blockAreaSimple: boolean;
   bgBlurriness: number;
 
   maxParticles: number;
@@ -215,7 +214,6 @@ export const DEFAULT_RENDER_CONFIG: RenderConfig = {
   preserveFramebuffer: false,
   renderExtra: true,
   renderBlockArea: true,
-  blockAreaSimple: false,
   bgBlurriness: 80,
 
   maxParticles: 5000,

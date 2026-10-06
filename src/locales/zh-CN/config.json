@@ -98,8 +98,6 @@
     "render-extra": "附加 (着色器)",
     "render-block-area": "剧情遮挡块 (blockArea)",
     "render-block-area-tips": "渲染 Phigros 4.0 剧情遮挡区域（blockAreaList）",
-    "block-area-simple": "极简遮挡 (平铺遮罩)",
-    "block-area-simple-tips": "遮挡区改用平铺遮罩绘制，不走官方材质；开销明显更小，弱 GPU / GLES2 场景推荐",
     "render-double-hint": "双押提示",
     "loudness-equalization": "音乐响度均衡 (-16 LUFS)",
     "audio-mix-mode": "混音模式",
